@@ -1,0 +1,12 @@
+
+wifi:
+Sprint9
+sprintgroup9
+
+
+
+
+pi:
+hostname: sprint
+username: sprint
+password: group9
