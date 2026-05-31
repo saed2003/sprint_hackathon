@@ -1,6 +1,7 @@
 # Street View Robot
 
 **Mentor:** Mr. Rajaei Khatib
+**Team:** 5 members
 
 ---
 
@@ -18,14 +19,18 @@ A mobile robot that drives around a room and, at each stop, constructs a **3D po
 
 ## Hardware
 
+Core components for this project:
+
 | Component | Details |
 |---|---|
-| **Platform** | RasbotV2 — Raspberry Pi chassis |
-| **Wheels** | 4× Mecanum wheels → omnidirectional movement (forward, back, strafe, diagonal, in-place rotation) |
-| **Motor control** | I2C motor driver |
+| **Robot platform** | Raspbot V2 educational robot — chassis with 4× Mecanum wheels → omnidirectional movement (forward, back, strafe, diagonal, in-place rotation), I2C motor driver |
+| **Compute** | Raspberry Pi 5 — 8 GB |
 | **Depth camera** | Intel RealSense D405 — factory-calibrated stereo IR pair |
-| **Rangefinder** | Ultrasonic — obstacle distance |
-| **Line sensors** | 4× infrared line-tracking — ground reference |
+
+Onboard Raspbot V2 sensors also used:
+
+- **Ultrasonic rangefinder** — obstacle distance.
+- **4× infrared line-tracking sensors** — ground reference / line following.
 
 ---
 
@@ -34,7 +39,7 @@ A mobile robot that drives around a room and, at each stop, constructs a **3D po
 Each group must:
 
 1. Assemble chassis — mount motors, wheels, camera, sensors.
-2. Initialize the Raspberry Pi:
+2. Initialize the Raspberry Pi 5:
    - Install OS.
    - Configure I2C + camera interfaces.
    - Set up Python env with **OpenCV**, **NumPy**, **pyrealsense2**.
