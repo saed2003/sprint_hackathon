@@ -11,4 +11,5 @@
 pyrealsense2==2.58.1.10581
 numpy==2.4.6
 opencv-python==4.13.0.92
-# open3d        # needed for the point-cloud / merge step (add when we get there)
+open3d==0.19.0          # point clouds, ICP merge, 3D viewer
+matplotlib==3.10.9      # quick preview renders (cloud_preview.png etc.)
