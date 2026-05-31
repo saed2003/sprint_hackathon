@@ -6,11 +6,16 @@ This is the back-projection step from D405_Depth_Point_Clouds.md:
     X = (u - ppx) * Z / fx
     Y = (v - ppy) * Z / fy
 
-Usage:
-    .venv/bin/python make_pointcloud.py                 # uses the newest capture
-    .venv/bin/python make_pointcloud.py captures/2026..  # a specific capture folder
+It does ONE point cloud per capture folder. By default that is just the newest
+capture; use --all (or list folders) to do several in a single command.
 
-Outputs (inside the capture folder):
+Usage:
+    .venv/bin/python make_pointcloud.py                       # newest capture only
+    .venv/bin/python make_pointcloud.py captures/2026..       # one specific capture
+    .venv/bin/python make_pointcloud.py captures/A captures/B # several captures
+    .venv/bin/python make_pointcloud.py --all                 # EVERY capture folder
+
+Outputs (inside each capture folder):
     cloud.ply          the 3D point cloud (open in MeshLab, CloudCompare, or Open3D)
     cloud_preview.png  a quick rendered preview so you can see it without a 3D viewer
 """
@@ -38,15 +43,21 @@ def load_intrinsics(path):
     return vals
 
 
-def newest_capture():
-    folders = [d for d in glob.glob("captures/*") if os.path.isdir(d)]
+def all_captures():
+    """Every capture folder (one that has a depth.npy), oldest -> newest."""
+    folders = sorted(
+        os.path.dirname(p) for p in glob.glob("captures/*/depth.npy"))
     if not folders:
-        sys.exit("No captures found. Run: .venv/bin/python capture.py")
+        sys.exit("No captures found. Run capture.py, or drive.py and press C.")
+    return folders
+
+
+def newest_capture():
+    folders = all_captures()
     return max(folders, key=os.path.getmtime)
 
 
-def main():
-    folder = sys.argv[1] if len(sys.argv) > 1 else newest_capture()
+def process(folder):
     print(f"Using capture: {folder}")
 
     depth_raw = np.load(os.path.join(folder, "depth.npy"))          # uint16
@@ -103,6 +114,21 @@ def main():
     out_png = os.path.join(folder, "cloud_preview.png")
     plt.tight_layout(); plt.savefig(out_png, dpi=110); plt.close()
     print(f"  saved -> {out_png}")
+
+
+def main():
+    args = sys.argv[1:]
+    if "--all" in args:
+        folders = all_captures()
+    elif args:
+        folders = args                  # one or more folders given explicitly
+    else:
+        folders = [newest_capture()]    # default: just the newest
+
+    print(f"Making {len(folders)} point cloud(s).\n")
+    for folder in folders:
+        process(folder)
+        print()
 
 
 if __name__ == "__main__":

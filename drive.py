@@ -14,6 +14,14 @@ Speed
   + or =      speed up  (step 20, max 255)
   -           slow down (step 20, min 40)
 
+Capture
+  R           run a 360 capture: rotate in place and take 9 shots (40 deg each)
+              -> captures/scan_<ts>/   (this only captures — it does NOT build the cloud)
+  T           build the 3D point cloud from the last R capture, on the Pi
+              -> captures/scan_<ts>/merged_360.ply
+  Y           open the 3D point cloud in a window on the Pi screen (orbit with the mouse)
+  V           take a single capture in place -> captures/<timestamp>/
+
 Other
   Space       stop motors immediately
   ESC / Ctrl-C  quit safely
@@ -31,6 +39,9 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from rasbot.api import RasBot, Color
+from rs_capture import StereoCapture
+import scan360
+import subprocess
 
 # ── tunables ──────────────────────────────────────────────────────────────────
 SPEED_DEFAULT = 120
@@ -68,8 +79,14 @@ def _read_key():
 def _status(action, speed, pan, tilt):
     sys.stdout.write(
         f'\r\033[K  [{action:<14}]  speed={speed:3d}  pan={pan:3d}  tilt={tilt:3d}'
-        '  (ESC/Ctrl-C = quit)'
+        '  (R=capture  T=build cloud  Y=3D view  V=single  ESC=quit)'
     )
+    sys.stdout.flush()
+
+
+def _line(msg):
+    """Print a full line while the terminal is in raw mode (needs explicit \\r\\n)."""
+    sys.stdout.write(f'\r\033[K{msg}\r\n')
     sys.stdout.flush()
 
 
@@ -86,6 +103,9 @@ def main():
         pan    = 90
         tilt   = 25
         action = 'stopped'
+        cam    = None          # RealSense D405, opened lazily on first 'c'
+        last_session = None    # folder from the last R capture (input for T)
+        last_ply     = None    # cloud built by T (input for Y = 3D view)
 
         fd          = sys.stdin.fileno()
         old_termios = termios.tcgetattr(fd)
@@ -127,6 +147,92 @@ def main():
                 elif key == SPACE:
                     bot.stop();              action = 'stopped'
 
+                # ── R: 360 capture only — rotate and take 9 shots (build later with T) ──
+                elif k == 'r':
+                    bot.stop()
+                    _status('360 capture', speed, pan, tilt)
+                    try:
+                        if cam is None:
+                            cam = StereoCapture()
+                        bot.set_all_leds_color(Color.BLUE)
+                        _line('--- starting 360 capture: 9 shots, 40 deg each '
+                              '(do not touch the robot) ---')
+                        last_session = scan360.run_scan(bot, cam, log=_line)
+                        last_ply = None
+                        bot.set_all_leds_color(Color.GREEN)
+                        bot.beep(0.15)
+                        _line(f'--- capture done -> {last_session}  '
+                              '(press T to build the cloud) ---')
+                        action = f'captured {os.path.basename(last_session)}'
+                    except Exception as e:
+                        bot.stop()
+                        bot.set_all_leds_color(Color.RED)
+                        _line(f'  capture error: {e}')
+                        action = 'capture error'
+
+                # ── T: build the point cloud from the last R capture (on the Pi) ──
+                elif k == 't':
+                    bot.stop()
+                    if last_session is None:
+                        _line('  no capture yet — press R first to take the 9 shots')
+                        action = 'no capture'
+                    else:
+                        _status('building cloud', speed, pan, tilt)
+                        try:
+                            bot.set_all_leds_color(Color.BLUE)
+                            _line(f'--- building cloud from '
+                                  f'{os.path.basename(last_session)} ---')
+                            last_ply = scan360.build_from_session(last_session, log=_line)
+                            bot.set_all_leds_color(Color.GREEN)
+                            bot.beep(0.15)
+                            _line(f'--- cloud ready -> {last_ply}  '
+                                  '(press Y for the 3D view) ---')
+                            action = 'cloud built'
+                        except Exception as e:
+                            bot.set_all_leds_color(Color.RED)
+                            _line(f'  build error: {e}')
+                            action = 'build error'
+
+                # ── Y: open the 3D point-cloud viewer on the Pi screen ──
+                elif k == 'y':
+                    bot.stop()
+                    if last_ply is None or not os.path.exists(last_ply):
+                        _line('  no cloud yet — press R to capture, then T to build it')
+                        action = 'no cloud'
+                    else:
+                        _line(f'--- opening 3D view: {last_ply}  '
+                              '(orbit with the mouse; ESC closes it) ---')
+                        try:
+                            here = os.path.dirname(os.path.abspath(__file__))
+                            subprocess.Popen(
+                                [sys.executable, os.path.join(here, 'view3d.py'), last_ply])
+                            action = '3D view open'
+                        except Exception as e:
+                            _line(f'  3D view error: {e}')
+                            action = '3D view error'
+
+                # ── single capture in place (handy for testing) ──────────────
+                elif k == 'v':
+                    bot.stop()
+                    _status('capturing', speed, pan, tilt)
+                    try:
+                        if cam is None:
+                            cam = StereoCapture()
+                        bot.set_all_leds_color(Color.BLUE)
+                        folder = cam.save()
+                        bot.set_all_leds_color(Color.GREEN)
+                        if folder is None:
+                            _line('  capture dropped a frame — try again')
+                            action = 'capture failed'
+                        else:
+                            bot.beep(0.1)
+                            _line(f'  saved -> {folder}')
+                            action = f'saved {os.path.basename(folder)}'
+                    except Exception as e:
+                        bot.set_all_leds_color(Color.RED)
+                        _line(f'  capture error: {e}')
+                        action = 'capture error'
+
                 # ── speed ─────────────────────────────────────────────────────
                 elif key in ('+', '='):
                     speed  = min(speed + SPEED_STEP, SPEED_MAX)
@@ -153,6 +259,8 @@ def main():
 
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_termios)
+            if cam is not None:
+                cam.close()
             bot.stop()
             bot.set_all_leds_color(Color.RED)
             time.sleep(0.3)
