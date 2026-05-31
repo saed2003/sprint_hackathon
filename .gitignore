@@ -1,0 +1,17 @@
+# Python environments
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Captured camera data (large, machine-specific — not committed)
+captures/
+
+# Generated point clouds
+*.ply
+*.pcd
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/

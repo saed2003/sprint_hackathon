@@ -82,3 +82,24 @@ The system supports **two navigation modes**.
 - On detecting a stop marker: halt → run capture routine → resume line following to next marker.
 
 Both modes let the user incrementally build a collection of point clouds across the room.
+
+---
+
+## Software — Progress
+
+| File | What it is |
+|---|---|
+| [`capture.py`](capture.py) | Captures depth + left/right IR frames from the D405 and saves them (with intrinsics) into `captures/<timestamp>/`. Verified working. |
+| [`D405_Depth_Point_Clouds.md`](D405_Depth_Point_Clouds.md) | Explainer: how the D405 works, the stereo-depth math, what the code does, and the full pipeline (depth → point cloud → 360° merge). |
+| [`requirements.txt`](requirements.txt) | Python deps + environment notes. |
+
+**Quick start (laptop):**
+
+```bash
+uv venv --python 3.11 .venv          # pyrealsense2 has no wheels for Python 3.14
+uv pip install -r requirements.txt
+.venv/bin/python capture.py          # ENTER = save a capture, q = quit
+```
+
+> The D405 is **passive stereo (no IR projector)** — aim it at textured, well-lit scenes;
+> blank walls produce empty depth. See the explainer for details.

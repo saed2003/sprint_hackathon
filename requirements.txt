@@ -1,0 +1,14 @@
+# Perception dependencies for the Street View Robot.
+# Versions below are what we verified working on the laptop (x86_64, Python 3.11).
+#
+# NOTE: system Python 3.14 is too new for prebuilt pyrealsense2. Create a 3.11 env:
+#   uv venv --python 3.11 .venv
+#   uv pip install -r requirements.txt
+# then run scripts with: .venv/bin/python capture.py
+#
+# On the Raspberry Pi 5 (ARM) pyrealsense2/open3d may need building from source.
+
+pyrealsense2==2.58.1.10581
+numpy==2.4.6
+opencv-python==4.13.0.92
+# open3d        # needed for the point-cloud / merge step (add when we get there)
