@@ -4,23 +4,28 @@ This explains the recent changes and **exactly** how to use them end to end.
 
 ## What changed
 
-1. **`drive.py` — press `R` for a full 360 scan, built ON THE PI.** The robot rotates
-   in place, takes **24 shots** (15° apart), and merges them into one 3D point cloud
-   `captures/scan_<ts>/merged_360.ply` — no laptop needed. Press **V** for a single
-   capture in place (handy for testing).
+1. **`drive.py` — press `R` to capture a full 360 on the Pi, `T` to build the cloud.**
+   The robot rotates in place and takes **9 shots** (40° apart) into
+   `captures/scan_<ts>/` (R), then merges them into one 3D point cloud
+   `captures/scan_<ts>/merged_360.ply` (T) — no laptop needed. Press **Y** to view it,
+   or **V** for a single capture in place (handy for testing).
 2. **New `scan360.py`** — the 360 sweep + a pure-numpy merge (no Open3D, which has no
-   Raspberry Pi wheel). Also runs standalone to rebuild a cloud, and to **calibrate**
-   the rotation timing.
+   Raspberry Pi wheel). The merge **measures the real per-step angle from the camera
+   images** (ORB → essential matrix), so it's robust to the open-loop rotation
+   overshooting. Also runs standalone to rebuild a cloud, and to **calibrate** the
+   rotation timing (pulsed — matches how a scan actually moves).
 3. **`make_pointcloud.py` can now do many captures at once** (`--all` or a list of
    folders). Before it only did one per run — that was the confusing part.
 4. **New `clean_captures.py`** — one command to delete captures so you can start fresh.
 5. New shared module **`rs_capture.py`** — the camera code that `capture.py`, `drive.py`
    and `scan360.py` all share, so every capture folder is identical.
 
-> **Open-loop warning.** The RasBot has no IMU/odometry, so the 360 rotation is *timed*,
-> not measured. The on-Pi `merged_360.ply` is therefore **approximate** — its quality
-> depends on the rotation calibration below. The raw shots are always kept, so you can
-> copy them to the laptop and run the **ICP** merge (`merge_clouds.py`) for a clean result.
+> **Open-loop note.** The RasBot has no IMU/odometry, so the 360 *rotation* is timed and
+> tends to overshoot. We no longer trust that timing for the cloud: the merge now
+> **measures** the true angle each step turned from the overlapping camera images
+> (falling back to the nominal step only when it can't). Calibration below still matters
+> so the steps land near 40° (keeps enough image overlap to measure). For a still-cleaner
+> result, copy the raw shots to the laptop and run the **ICP** merge (`merge_clouds.py`).
 
 ---
 
@@ -39,22 +44,31 @@ make + merge clouds on the laptop.**
 
 ## Step 0 — Calibrate the rotation (do this ONCE, then re-check if the floor/battery changes)
 
-The merge assumes each step turned exactly 15°. Tell the robot how long a full 360° takes:
+The merge measures the real angle, but the steps still need to land near 40° so consecutive
+shots overlap enough to be measured. Calibrate the way the scan actually moves — short
+start/stop pulses, **not** one long continuous spin:
 
 ```bash
 cd ~/sprint_hackathon
-python3 scan360.py --calibrate --secs 6      # rotates CCW for 6 s; watch how far it turns
+python3 scan360.py --calibrate          # does 8 scan-like pulses; mark heading, watch it
 ```
 
-Measure the **degrees it actually turned**, then set in `scan360.py`:
+Measure the **total degrees it turned**, then let it do the math for you:
+
+```bash
+python3 scan360.py --calibrate --turned 470   # prints the exact SCAN_SEC_PER_DEG to set
+```
+
+or set it yourself in `scan360.py`:
 
 ```
-SECONDS_PER_REV = secs * 360 / (degrees turned)
-# e.g. it turned 300° in 6 s  ->  SECONDS_PER_REV = 6 * 360 / 300 = 7.2
+SCAN_SEC_PER_DEG = (total pulse seconds) / (degrees turned)
+# e.g. 8 pulses x 0.67 s = 5.33 s of driving that turned 470°  ->  5.33 / 470 = 0.01134
 ```
 
-Edit `SCAN_SECONDS_PER_REV` near the top of [scan360.py](scan360.py) to that value.
-If the merged cloud later looks "unwound" / mirrored, flip `SCAN_DIR` (1 ↔ -1).
+Edit `SCAN_SEC_PER_DEG` near the top of [scan360.py](scan360.py), then re-run `--calibrate`
+to confirm it now turns ~360° total. If the cloud later looks "unwound"/mirrored, flip
+`SCAN_DIR` (1 ↔ -1). If it coasts/overshoots a lot, set a small `SCAN_BRAKE_TAP` (e.g. 0.05).
 
 ---
 
@@ -66,10 +80,11 @@ python3 drive.py
 
 Drive with **W A S D / Q E**, aim with the **arrow keys**. At a spot you want to map:
 
-- Press **R** → the LEDs turn **blue** and the robot runs the whole 360 by itself:
-  stop → shoot → rotate 15° → stop → shoot … ×24, then it **builds the cloud on the Pi**
-  and prints `--- 360 scan done -> captures/scan_<ts>/merged_360.ply ---`. **Don't touch
-  it** during the sweep. Takes ~15 s.
+- Press **R** → the LEDs turn **blue** and the robot runs the 360 capture by itself:
+  stop → shoot → rotate 40° → stop → shoot … ×9. **Don't touch it** during the sweep.
+- Press **T** → it builds the cloud on the Pi (measuring the real per-step angle from
+  the images) and prints `--- cloud ready -> captures/scan_<ts>/merged_360.ply ---`.
+- Press **Y** → orbit the cloud on the Pi screen.
 - Press **V** → a single capture in place → `captures/<timestamp>/` (for testing).
 - The first capture is a little slow (camera warm-up ~1 s); after that it's fast.
 
@@ -80,11 +95,12 @@ open it in any PLY viewer (MeshLab, CloudCompare, or Open3D). That's the deliver
 **no laptop processing required.**
 
 ### Rebuild a scan without re-driving
-If you want to re-merge an existing scan with a different angle (e.g. after recalibrating):
+Re-merge an existing scan (e.g. to compare measured vs timed, or after flipping the sign):
 
 ```bash
-python3 scan360.py captures/scan_20260531_1700              # step = 360 / number-of-shots
-python3 scan360.py captures/scan_20260531_1700 --angle 15   # force the step angle
+python3 scan360.py captures/scan_20260531_1700              # measured angle (default)
+python3 scan360.py captures/scan_20260531_1700 --known      # trust the timed step instead
+python3 scan360.py captures/scan_20260531_1700 --angle 40   # force a fixed step angle
 python3 scan360.py captures/scan_20260531_1700 --dir -1     # flip rotation sign
 ```
 
@@ -102,7 +118,7 @@ scp -r pi@<robot-ip>:~/sprint_hackathon/captures ~/sprint_hackathon/
 Then merge one scan's shots, in order, seeding the known step angle:
 
 ```bash
-.venv/bin/python merge_clouds.py --angle 15 captures/scan_20260531_1700/shot_*/
+.venv/bin/python merge_clouds.py --angle 40 captures/scan_20260531_1700/shot_*/
 ```
 
 This writes `merged.ply` (ICP-refined). The steps below (`make_pointcloud.py`, etc.)
@@ -187,14 +203,14 @@ scratch but keep the original camera data. Use the plain command to wipe everyth
 
 ```bash
 # ── on the Pi: calibrate once, then scan ──
-python3 scan360.py --calibrate --secs 6    # measure turn rate -> set SCAN_SECONDS_PER_REV
-python3 drive.py                           # drive; press R = full 360 scan + 3D cloud
-                                           #         press V = single capture
-# result per spot: captures/scan_<ts>/merged_360.ply   (open in MeshLab/CloudCompare)
+python3 scan360.py --calibrate --turned <deg>  # pulsed calibrate -> set SCAN_SEC_PER_DEG
+python3 drive.py                               # drive; R = 360 capture, T = build, Y = view
+                                               #         V = single capture
+# result per spot: captures/scan_<ts>/merged_360.ply   (view with: python3 view3d.py <ply>)
 
 # ── OPTIONAL: cleaner ICP merge on the laptop ──
 scp -r pi@<robot-ip>:~/sprint_hackathon/captures ~/sprint_hackathon/
-.venv/bin/python merge_clouds.py --angle 15 captures/scan_<ts>/shot_*/
+.venv/bin/python merge_clouds.py --angle 40 captures/scan_<ts>/shot_*/
 
 # ── start over ──
 python3 clean_captures.py                  # delete captures + merged output

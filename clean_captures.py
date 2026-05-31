@@ -33,11 +33,12 @@ def main():
               if os.path.exists(os.path.join(HERE, f))]
 
     if clouds_only:
-        # keep the raw captures, delete only the things we generated from them
+        # keep the raw captures (depth.npy / ir_*.png), delete only generated clouds —
+        # at any depth, so it covers both flat captures/<ts>/ and scan_<ts>/shot_*/.
+        gen_patterns = ("cloud.ply", "cloud_preview.png", "cloud_views.png", "merged_360.ply")
         targets = merged + [
-            p for d in capture_dirs
-            for pat in ("cloud.ply", "cloud_preview.png", "cloud_views.png")
-            for p in glob.glob(os.path.join(d, pat))
+            p for pat in gen_patterns
+            for p in glob.glob(os.path.join(HERE, "captures", "**", pat), recursive=True)
         ]
         label = "generated clouds (raw captures kept)"
     else:
