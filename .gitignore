@@ -6,6 +6,7 @@ __pycache__/
 
 # Captured camera data (large, machine-specific — not committed)
 captures/
+test_capture/
 
 # Generated point clouds
 *.ply
