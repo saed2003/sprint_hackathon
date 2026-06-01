@@ -34,27 +34,25 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from setup_and_api.api import RasBot, Color
 
 # ── tunables ──────────────────────────────────────────────────────────────────
-BASE_SPEED   = 55    # straight-ahead speed when centred (0–255)
+BASE_SPEED   = 40    # straight-ahead speed — keep low so PID has time to correct
 MAX_SPEED    = 255   # motor speed ceiling
 MIN_SPEED    = 0     # motor speed floor (0 = allow one side to stop, no reverse)
 
 # PID gains — tuned for 50 Hz binary sensors on Raspbot V2
-# At 50 Hz a 1-unit error jump gives derivative = 1/0.02 = 50.
-# KD must be small to avoid huge spikes: KD=0.5 → D-term ≈ 25 per unit jump.
-KP           = 20.0  # proportional: main steering force
-KD           = 0.5   # derivative:   small! binary sensors make big jumps
-KI           = 0.0   # integral:     corrects persistent drift (leave 0 to start)
+KP           = 30.0  # proportional: raised so small errors get caught fast
+KD           = 0.5   # derivative:   keep small for binary sensors (big jumps)
+KI           = 0.0   # integral:     leave 0 unless robot consistently drifts
 MAX_INTEGRAL = 20.0  # anti-windup clamp for the I term
 
 LOOP_HZ      = 50
 LOOP_PAUSE   = 1.0 / LOOP_HZ
 
 # Recovery — what happens when sensors all go dark
-MISS_CREEP_TICKS = 6     # ticks at creep speed before full stop (~120 ms)
-MISS_CREEP_SPEED = 20    # very slow forward creep during brief gap
-SEARCH_SPEED     = 20    # slow spin during recovery (avoids overshoot)
-SEARCH_TIMEOUT_S = 1.5   # give up quickly and stay stopped (tape ended)
-RECOVER_SETTLE_S = 0.15  # pause after re-acquiring before moving
+MISS_CREEP_TICKS = 10    # ticks at creep speed (~200 ms) before full stop
+MISS_CREEP_SPEED = 18    # very slow creep during brief gap
+SEARCH_SPEED     = 18    # slow spin during recovery
+SEARCH_TIMEOUT_S = 2.5   # give up and stop after this long
+RECOVER_SETTLE_S = 0.2   # pause after re-acquiring before moving
 
 # Stop-marker behaviour
 STOP_DEBOUNCE_S  = 2.0   # ignore re-triggers after a scan for this long
