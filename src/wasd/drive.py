@@ -49,7 +49,14 @@ SPEED_DEFAULT = 120
 SPEED_STEP    = 20
 SPEED_MIN     = 40
 SPEED_MAX     = 255
-KEY_TIMEOUT   = 0.15   # seconds — motors stop if no key arrives within this window
+KEY_TIMEOUT   = 0.5    # seconds — motors stop if no key arrives within this window.
+                       # MUST be longer than your terminal's key-repeat DELAY (the pause
+                       # between the first 'w' and the start of the auto-repeat stream,
+                       # typically 0.25–0.5s) — otherwise the robot stutter-stops once at
+                       # the start of every hold. Trade-off: the robot also coasts up to
+                       # this long after you release a key. If it still stutters, raise this
+                       # (or shorten your OS key-repeat delay); if the coast feels too long
+                       # and your repeat delay is short, lower it back toward ~0.3.
 PAN_STEP      = 10
 TILT_STEP     = 10
 
