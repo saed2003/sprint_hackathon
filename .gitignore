@@ -5,12 +5,12 @@ __pycache__/
 *.pyc
 
 # Captured camera data (large, machine-specific — not committed)
-captures/
-test_capture/
+#captures/
+#test_capture/
 
 # Generated point clouds
-*.ply
-*.pcd
+#*.ply
+#*.pcd
 
 # OS / editor
 .DS_Store
