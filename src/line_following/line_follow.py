@@ -34,24 +34,24 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from setup_and_api.api import RasBot, Color
 
 # ── tunables ──────────────────────────────────────────────────────────────────
-BASE_SPEED        = 60   # normal forward speed (0–255)
-TURN_SPEED        = 20   # speed reduction on slow side — gentle curve
-HARD_TURN_SPEED   = 35   # speed reduction on slow side — sharp curve
-SEARCH_SPEED      = 25   # spin speed during recovery (slow = don't overshoot)
+BASE_SPEED        = 40   # normal forward speed (0–255) — keep low for stability
+TURN_SPEED        = 15   # speed reduction for gentle ±1 correction
+HARD_TURN_SPEED   = 38   # speed reduction for sharp ±2/±3 correction (near-stop one side)
+SEARCH_SPEED      = 20   # very slow recovery spin — avoids overshooting
 LOOP_HZ           = 50
 LOOP_PAUSE        = 1.0 / LOOP_HZ
 
 # When sensors all go dark:
-#   Phase 1 (MISS_CREEP_TICKS): creep slowly — bridges small tape gaps.
-#   Phase 2: stop fully, then spin to search for the line.
-MISS_CREEP_SPEED  = 30   # very slow creep during phase 1
-MISS_CREEP_TICKS  = 8    # ~160 ms at 50 Hz before stopping
+#   Phase 1 (MISS_CREEP_TICKS): keep steering at creep speed — bridges small gaps.
+#   Phase 2: full stop, then slow spin to search.
+MISS_CREEP_SPEED  = 20   # very slow creep during phase 1
+MISS_CREEP_TICKS  = 6    # ~120 ms at 50 Hz
 
 # How long to spin searching before giving up and staying stopped.
 SEARCH_TIMEOUT_S  = 3.0
 
 # After finding the line in recovery: stop and settle before resuming.
-RECOVER_SETTLE_S  = 0.25
+RECOVER_SETTLE_S  = 0.3
 
 # After a stop-marker scan: ignore new triggers for this long.
 STOP_DEBOUNCE_S   = 1.5
@@ -83,43 +83,38 @@ def read_sensors(bot):
     return lo, li, ri, ro, error, all_on, all_off
 
 
-def steer(bot, error):
-    """Differential steering — no in-place rotation during normal tracking.
+def steer(bot, error, spd=None):
+    """Differential steering with optional speed override.
 
     _apply_motors(lf, lr, rf, rr)
-    Curve LEFT  → slow left wheels  (right side faster) → robot turns left
-    Curve RIGHT → slow right wheels (left side faster)  → robot turns right
+    Curve LEFT  → slow left wheels  (right side faster)
+    Curve RIGHT → slow right wheels (left side faster)
+    max(0, ...) ensures no wheel goes negative accidentally.
     """
+    spd = spd if spd is not None else BASE_SPEED
+
     if error == 0:
-        bot.forward(BASE_SPEED)
+        bot.forward(spd)
 
     elif error == -1:
         # Line slightly left → gentle curve left
-        bot._apply_motors(
-            BASE_SPEED - TURN_SPEED, BASE_SPEED - TURN_SPEED,  # LF, LR slow
-            BASE_SPEED,              BASE_SPEED,                # RF, RR full
-        )
+        slow = max(0, spd - TURN_SPEED)
+        bot._apply_motors(slow, slow, spd, spd)
 
     elif error == 1:
         # Line slightly right → gentle curve right
-        bot._apply_motors(
-            BASE_SPEED,              BASE_SPEED,                # LF, LR full
-            BASE_SPEED - TURN_SPEED, BASE_SPEED - TURN_SPEED,  # RF, RR slow
-        )
+        slow = max(0, spd - TURN_SPEED)
+        bot._apply_motors(spd, spd, slow, slow)
 
     elif error <= -2:
-        # Line hard left → sharp curve left
-        bot._apply_motors(
-            BASE_SPEED - HARD_TURN_SPEED, BASE_SPEED - HARD_TURN_SPEED,
-            BASE_SPEED,                   BASE_SPEED,
-        )
+        # Line hard left → stop left side, keep right full
+        slow = max(0, spd - HARD_TURN_SPEED)
+        bot._apply_motors(slow, slow, spd, spd)
 
     else:  # error >= 2
-        # Line hard right → sharp curve right
-        bot._apply_motors(
-            BASE_SPEED,                   BASE_SPEED,
-            BASE_SPEED - HARD_TURN_SPEED, BASE_SPEED - HARD_TURN_SPEED,
-        )
+        # Line hard right → stop right side, keep left full
+        slow = max(0, spd - HARD_TURN_SPEED)
+        bot._apply_motors(spd, spd, slow, slow)
 
 
 def _log(msg):
@@ -223,8 +218,9 @@ def run(bot, cam=None, log=_log):
                 miss_count += 1
 
             if miss_count <= MISS_CREEP_TICKS:
-                # Phase 1: creep slowly — handles small tape gaps.
-                bot.forward(MISS_CREEP_SPEED)
+                # Phase 1: keep last steering direction at creep speed.
+                # Keeps turning on curves instead of going straight off the tape.
+                steer(bot, last_error, MISS_CREEP_SPEED)
                 time.sleep(LOOP_PAUSE)
                 continue
 
