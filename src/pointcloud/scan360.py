@@ -311,7 +311,7 @@ def scan_and_build(bot, cam, log=print, shots=SCAN_SHOTS, measure=True, **kw):
 def _calibrate(shots, speed, sec_per_deg, settle, brake_tap, turned=None):
     """Pulsed calibration: pulse-rotate EXACTLY like a scan, so the measured time->angle
     ratio is valid for the real (start/stop) motion — not a single continuous spin."""
-    from rasbot.api import RasBot   # project root already on sys.path (top of file)
+    from setup_and_api.api import RasBot
     step_angle = 360.0 / shots
     step_time  = sec_per_deg * step_angle
     pulses     = shots - 1                       # a scan rotates shots-1 times

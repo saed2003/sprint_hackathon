@@ -22,7 +22,7 @@ from typing import NamedTuple, Tuple
 import smbus
 import numpy as np
 
-from rasbot.api.constants import (
+from .constants import (
     I2C_ADDRESS, I2C_BUS, Register, Color, Motor,
     PAN_SERVO_ID, TILT_SERVO_ID, PAN_DEFAULT, TILT_DEFAULT,
     PAN_MIN, PAN_MAX, TILT_MIN, TILT_MAX, LED_COUNT,

@@ -40,7 +40,7 @@ import subprocess
 
 # project root = the folder that contains wasd/, camera/, pointcloud/, rasbot/, ...
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from rasbot.api import RasBot, Color
+from setup_and_api.api import RasBot, Color
 from camera.rs_capture import StereoCapture
 from pointcloud import scan360
 
