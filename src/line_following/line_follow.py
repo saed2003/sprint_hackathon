@@ -87,9 +87,8 @@ def steer(bot, error, spd=None):
     """Differential steering with optional speed override.
 
     _apply_motors(lf, lr, rf, rr)
-    Curve LEFT  → slow left wheels  (right side faster)
-    Curve RIGHT → slow right wheels (left side faster)
-    max(0, ...) ensures no wheel goes negative accidentally.
+    Gentle curve  : one side slowed, other full
+    Sharp turn    : one side reversed, other full → pivot in place
     """
     spd = spd if spd is not None else BASE_SPEED
 
@@ -97,24 +96,22 @@ def steer(bot, error, spd=None):
         bot.forward(spd)
 
     elif error == -1:
-        # Line slightly left → gentle curve left
+        # Line slightly left → gentle curve left (slow left side)
         slow = max(0, spd - TURN_SPEED)
         bot._apply_motors(slow, slow, spd, spd)
 
     elif error == 1:
-        # Line slightly right → gentle curve right
+        # Line slightly right → gentle curve right (slow right side)
         slow = max(0, spd - TURN_SPEED)
         bot._apply_motors(spd, spd, slow, slow)
 
     elif error <= -2:
-        # Line hard left → stop left side, keep right full
-        slow = max(0, spd - HARD_TURN_SPEED)
-        bot._apply_motors(slow, slow, spd, spd)
+        # Line hard left → pivot left (left side BACKWARD, right FORWARD)
+        bot._apply_motors(-HARD_TURN_SPEED, -HARD_TURN_SPEED, spd, spd)
 
     else:  # error >= 2
-        # Line hard right → stop right side, keep left full
-        slow = max(0, spd - HARD_TURN_SPEED)
-        bot._apply_motors(spd, spd, slow, slow)
+        # Line hard right → pivot right (right side BACKWARD, left FORWARD)
+        bot._apply_motors(spd, spd, -HARD_TURN_SPEED, -HARD_TURN_SPEED)
 
 
 def _log(msg):
