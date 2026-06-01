@@ -34,15 +34,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from setup_and_api.api import RasBot, Color
 
 # ── tunables ──────────────────────────────────────────────────────────────────
-BASE_SPEED   = 40    # straight-ahead speed — keep low so PID has time to correct
-MAX_SPEED    = 255   # motor speed ceiling
-MIN_SPEED    = 0     # motor speed floor (0 = allow one side to stop, no reverse)
+BASE_SPEED   = 42    # straight-ahead speed when centred
+MAX_SPEED    = 255
+MIN_SPEED    = 5     # keep wheels slightly spinning even during sharp turns
 
-# PID gains — tuned for 50 Hz binary sensors on Raspbot V2
-KP           = 30.0  # proportional: raised so small errors get caught fast
-KD           = 0.5   # derivative:   keep small for binary sensors (big jumps)
-KI           = 0.0   # integral:     leave 0 unless robot consistently drifts
-MAX_INTEGRAL = 20.0  # anti-windup clamp for the I term
+# PID gains
+KP           = 20.0  # proportional — lowered to reduce oscillation/wobble
+KD           = 0.5   # derivative   — keep small for binary sensors
+KI           = 0.0   # integral     — leave 0
+MAX_INTEGRAL = 20.0
 
 LOOP_HZ      = 50
 LOOP_PAUSE   = 1.0 / LOOP_HZ
@@ -136,19 +136,18 @@ class PID:
 # ── motor application ─────────────────────────────────────────────────────────
 
 def apply_correction(bot, correction):
-    """Drive both sides from a PID correction value.
+    """Drive both sides from a PID correction value with adaptive speed.
 
-    correction > 0  → tape is RIGHT of robot → steer right
-                      (left side faster, right side slower)
-    correction < 0  → tape is LEFT  of robot → steer left
-                      (right side faster, left side slower)
+    correction > 0  → steer right (left faster, right slower)
+    correction < 0  → steer left  (right faster, left slower)
 
-    _apply_motors(lf, lr, rf, rr)
+    Adaptive speed: slow down proportionally when correcting so the robot
+    doesn't overshoot on curves. Full speed only when centred (correction=0).
     """
-    left  = int(BASE_SPEED + correction)
-    right = int(BASE_SPEED - correction)
-    left  = max(MIN_SPEED, min(MAX_SPEED, left))
-    right = max(MIN_SPEED, min(MAX_SPEED, right))
+    # Reduce forward speed as correction grows → smoother turns
+    speed = max(MIN_SPEED + 5, int(BASE_SPEED - abs(correction) * 0.25))
+    left  = max(MIN_SPEED, min(MAX_SPEED, int(speed + correction)))
+    right = max(MIN_SPEED, min(MAX_SPEED, int(speed - correction)))
     bot._apply_motors(left, left, right, right)
 
 
