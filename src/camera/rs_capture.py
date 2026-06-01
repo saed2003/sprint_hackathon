@@ -133,6 +133,23 @@ class StereoCapture:
             f.write(f"depth_scale {self.depth_scale}\nbaseline_m {self.baseline_m}\n")
         return d
 
+    def grab_ir(self, settle=2):
+        """Grab one left-IR frame as a uint8 numpy array, WITHOUT saving anything.
+
+        Used by the 360 scan's visual closed-loop rotation to measure how far the
+        robot has actually turned (compare a live frame against the last shot).
+        Returns None if the frame is dropped. Starts the camera lazily if needed.
+        """
+        if self.pipeline is None:
+            self.start()
+        for _ in range(settle):
+            self.pipeline.wait_for_frames()
+        frames = self.pipeline.wait_for_frames()
+        irl = frames.get_infrared_frame(1)
+        if not irl:
+            return None
+        return np.asanyarray(irl.get_data())
+
     @staticmethod
     def _new_folder(out_root):
         """captures/<timestamp>/ — add a suffix if two saves land in one second."""
