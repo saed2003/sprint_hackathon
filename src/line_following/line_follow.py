@@ -38,11 +38,13 @@ BASE_SPEED   = 55    # straight-ahead speed when centred (0–255)
 MAX_SPEED    = 255   # motor speed ceiling
 MIN_SPEED    = 0     # motor speed floor (0 = allow one side to stop, no reverse)
 
-# PID gains — start here, tune on hardware (see checklist above)
-KP           = 28.0  # proportional: main steering force
-KD           = 8.0   # derivative:   dampens oscillation / overshoot
-KI           = 0.0   # integral:     corrects long-term drift (usually leave 0)
-MAX_INTEGRAL = 30.0  # anti-windup clamp for the I term
+# PID gains — tuned for 50 Hz binary sensors on Raspbot V2
+# At 50 Hz a 1-unit error jump gives derivative = 1/0.02 = 50.
+# KD must be small to avoid huge spikes: KD=0.5 → D-term ≈ 25 per unit jump.
+KP           = 20.0  # proportional: main steering force
+KD           = 0.5   # derivative:   small! binary sensors make big jumps
+KI           = 0.0   # integral:     corrects persistent drift (leave 0 to start)
+MAX_INTEGRAL = 20.0  # anti-windup clamp for the I term
 
 LOOP_HZ      = 50
 LOOP_PAUSE   = 1.0 / LOOP_HZ
@@ -281,15 +283,13 @@ def run(bot, cam=None, log=_log):
             error = sensor_error(lo, li, ri, ro)
             dist  = error_to_cm(error)
 
-            # ── debug ──────────────────────────────────────────────────────────
+            # ── debug (P-only estimate — does NOT advance PID state) ───────────
             if DEBUG_EVERY and tick % DEBUG_EVERY == 0:
                 if error is not None:
-                    corr = pid.compute(error)  # peek only
-                    pid._last_err = error      # don't double-integrate
-                    pid._last_t   = None       # let next real compute re-time
+                    p_est = KP * error          # show P term only for display
                     state = (f"err={error:+.0f}  "
                              f"dist={dist:+.1f}cm  "
-                             f"corr={corr:+.0f}")
+                             f"P≈{p_est:+.0f}")
                 else:
                     state = f"MISS×{miss_count}" if all_off else "STOP"
                 print(f"lo={int(lo)} li={int(li)} ri={int(ri)} ro={int(ro)}"
