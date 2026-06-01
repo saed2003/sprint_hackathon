@@ -17,8 +17,12 @@ sudo raspi-config
 
 ```bash
 sudo apt update
-sudo apt install -y python3-numpy python3-opencv python3-smbus i2c-tools
+sudo apt install -y python3-numpy python3-opencv python3-smbus i2c-tools python3-pygame
 ```
+
+> `python3-pygame` is for the WASD teleop ([wasd/drive.py](../wasd/drive.py)), which uses
+> pygame for true hold-to-move / release-to-stop. Run it inside the Pi desktop (e.g. over
+> VNC) so it has a window with keyboard focus — it won't work over a plain SSH terminal.
 
 ## 4. OLED Display Support (optional)
 
