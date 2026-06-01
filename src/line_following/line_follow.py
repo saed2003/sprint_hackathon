@@ -1,7 +1,7 @@
 """
 Autonomous line-following — Mode 2 (black tape, 4 IR sensors).
 
-Line following  : black tape detected by 4 IR sensors.
+Line following  : black tape, 4 IR sensors, pattern-based steering.
 Stop markers    : RED tape cross detected by USB camera (HSV color filter).
                   Falls back to all-4-IR-sensors when SKIP_SCAN=True.
 
@@ -9,11 +9,8 @@ Sensor layout (looking down at the floor beneath the robot):
     [L_OUT]  [L_IN]  |  [R_IN]  [R_OUT]
     True = sensor over dark tape.
 
-Run on the Pi from the project root:
-    python3 src/line_following/line_follow.py
-
-Calibrate (verify sensor polarity):
-    python3 src/line_following/line_follow.py --calibrate
+Run:       python3 src/line_following/line_follow.py
+Calibrate: python3 src/line_following/line_follow.py --calibrate
 """
 
 import os, sys, time, threading
@@ -24,30 +21,25 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from setup_and_api.api import RasBot, Color
 
 # ── tunables ──────────────────────────────────────────────────────────────────
-BASE_SPEED        = 55   # forward speed when centered (0–255)
-MIN_SPEED         = 25   # minimum speed allowed during sharp corrections
-TURN_SPEED        = 15   # gentle correction reduction (error ±1)
-HARD_TURN_SPEED   = 30   # reversed-side speed for strong pivot (error ±2)
-SEARCH_SPEED      = 20   # recovery spin speed — slow to avoid overshooting
+BASE_SPEED        = 55   # straight-ahead speed (0–255)
+MIN_SPEED         = 25   # minimum allowed speed (sharp turns / edge)
+TURN_SPEED        = 15   # slow-side reduction for gentle curves
+SEARCH_SPEED      = 20   # recovery spin speed (slow = less overshoot)
 LOOP_HZ           = 50
 LOOP_PAUSE        = 1.0 / LOOP_HZ
 
-MISS_CREEP_SPEED  = 20   # creep speed during phase-1 brief gap
-MISS_CREEP_TICKS  = 8    # ~160 ms of creep before stopping (~8 ticks)
+MISS_CREEP_SPEED  = 20   # speed during phase-1 brief gap
+MISS_CREEP_TICKS  = 8    # ticks of creep before full stop (~160 ms)
 
-SEARCH_TIMEOUT_S  = 4.0  # max spin time in recovery before giving up
-RECOVER_SETTLE_S  = 0.15 # settle after recovery before resuming
-STOP_DEBOUNCE_S   = 2.0  # ignore stop-marker re-triggers for this long
-CLEAR_MARKER_S    = 0.4  # drive forward after scan to clear the cross
+SEARCH_TIMEOUT_S  = 4.0
+RECOVER_SETTLE_S  = 0.15
+STOP_DEBOUNCE_S   = 2.0
+CLEAR_MARKER_S    = 0.4
 
-# Red tape stop-marker detection (camera)
-RED_PIXEL_THRESHOLD = 3000   # min red pixels in lower frame half to trigger
-RED_CHECK_INTERVAL  = 0.12   # seconds between camera grabs (~8 fps)
+RED_PIXEL_THRESHOLD = 3000
+RED_CHECK_INTERVAL  = 0.12
 
-# Set True while tuning steering (uses IR all-on as stop marker, no camera)
-SKIP_SCAN         = True
-
-# Live debug print every N ticks
+SKIP_SCAN         = True   # True = IR stop-marker + no scan (tuning mode)
 DEBUG_EVERY       = 10
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -55,87 +47,99 @@ DEBUG_EVERY       = 10
 # ── sensor reading ────────────────────────────────────────────────────────────
 
 def read_sensors(bot):
-    """Return (lo, li, ri, ro, error, all_on, all_off).
-
-    Physical error map (corrected for severity):
-        Pattern         error   Meaning
-        lo only          -2     robot at LEFT edge  → STRONGEST right turn
-        lo + li          -3     robot moderately left → medium right arc
-        li only          -1     robot slightly left  → gentle right curve
-        li + ri           0     centered             → straight
-        ri only          +1     robot slightly right → gentle left curve
-        ri + ro          +3     robot moderately right→ medium left arc
-        ro only          +2     robot at RIGHT edge  → STRONGEST left turn
-        all on            0*    STOP MARKER (handled separately)
-    """
+    """Return (lo, li, ri, ro, all_on, all_off)."""
     lo, li, ri, ro = bot.read_line_sensors()
-    error  = (-2 * lo) + (-1 * li) + (1 * ri) + (2 * ro)
     all_on  = lo and li and ri and ro
     all_off = not (lo or li or ri or ro)
-    return lo, li, ri, ro, error, all_on, all_off
+    return lo, li, ri, ro, all_on, all_off
 
 
-# ── adaptive steering ─────────────────────────────────────────────────────────
+# ── pattern-based steering ────────────────────────────────────────────────────
+#
+# Why pattern-based instead of weighted-error:
+#   The weighted sum collapses distinct situations into the same number.
+#   e.g. (li+ri+ro) and (ro only) both give error=+2, but need very different
+#   responses — gentle curve vs strong arc. Checking each sensor directly fixes
+#   this without ambiguity.
+#
+# Sensor pattern → physical position → required action:
+#
+#   lo  li  ri  ro   position               turn needed
+#   0   1   1   0    centred                straight
+#   0   1   1   1    3-right (slight right) gentle LEFT  (slow left side)
+#   1   1   1   0    3-left  (slight left)  gentle RIGHT (slow right side)
+#   0   0   1   0    ri only (slight right) gentle LEFT
+#   0   1   0   0    li only (slight left)  gentle RIGHT
+#   0   0   1   1    ri+ro   (medium right) LEFT arc     (left side stopped)
+#   1   1   0   0    lo+li   (medium left)  RIGHT arc    (right side stopped)
+#   0   0   0   1    ro only (far right)    LEFT arc     (left side stopped)
+#   1   0   0   0    lo only (far left)     RIGHT arc    (right side stopped)
+#   all four          stop marker           handled elsewhere
+#   none              lost                  handled elsewhere
+#
+# NO wheel reversals during normal tracking — prevents overshoot.
 
-def _adaptive_speed(error):
-    """Reduce speed when at the tape edge — more time to correct."""
-    if abs(error) == 2:          # single outer sensor = at the edge (worst)
-        return max(MIN_SPEED, BASE_SPEED - 25)
-    elif abs(error) == 3:        # both sensors on one side = moderate drift
-        return max(MIN_SPEED, BASE_SPEED - 10)
-    return BASE_SPEED            # centered or slight drift = full speed
+def _speed(lo, li, ri, ro):
+    """Adaptive speed: slow down near the edge."""
+    n = int(lo) + int(li) + int(ri) + int(ro)
+    if n == 1 and (lo or ro):        # single outer sensor = at edge
+        return max(MIN_SPEED, BASE_SPEED - 20)
+    if n == 2 and (lo and ro) or (lo and ri) or (li and ro):
+        return max(MIN_SPEED, BASE_SPEED - 15)   # skipped sensors, off-centre
+    return BASE_SPEED
 
 
-def steer(bot, error, spd=None):
-    """Physically correct graduated steering.
-
-    _apply_motors(lf, lr, rf, rr)
-
-    error  0 : straight
-    error ±1 : gentle curve    — one side slowed
-    error ±3 : medium arc      — one side stopped  (two sensors on tape)
-    error ±2 : strong pivot    — one side REVERSED (single outer sensor only)
-               ↑ treated MORE aggressively than ±3 because the robot is
-               further off the tape (only the outermost sensor touching).
-    """
+def steer(bot, lo, li, ri, ro, spd=None):
+    """Pattern-based differential steering. No wheel reversals."""
     if spd is None:
-        spd = _adaptive_speed(error)
+        spd = _speed(lo, li, ri, ro)
 
-    if error == 0:
-        bot.forward(spd)
+    slow = max(0, spd - TURN_SPEED)
 
-    elif error == -1:
-        # Slightly left drift → gentle RIGHT curve (slow right side)
-        slow = max(0, spd - TURN_SPEED)
-        bot._apply_motors(spd, spd, slow, slow)
+    if li and ri:
+        if not lo and not ro:
+            # ── centred ──────────────────────────────────────────────────────
+            bot.forward(spd)
+        elif ro and not lo:
+            # ── li+ri+ro : slight right → gentle LEFT ────────────────────────
+            bot._apply_motors(slow, slow, spd, spd)
+        elif lo and not ro:
+            # ── lo+li+ri : slight left → gentle RIGHT ────────────────────────
+            bot._apply_motors(spd, spd, slow, slow)
+        else:
+            bot.forward(spd)                    # all four = stop marker case
 
-    elif error == 1:
-        # Slightly right drift → gentle LEFT curve (slow left side)
-        slow = max(0, spd - TURN_SPEED)
-        bot._apply_motors(slow, slow, spd, spd)
+    elif ri and not li:
+        if ro:
+            # ── ri+ro : medium right → LEFT arc ──────────────────────────────
+            bot._apply_motors(0, 0, spd, spd)
+        else:
+            # ── ri only : slight right → gentle LEFT ─────────────────────────
+            bot._apply_motors(slow, slow, spd, spd)
 
-    elif error == -3:
-        # Moderate left drift (lo+li on tape) → medium RIGHT arc
-        bot._apply_motors(spd, spd, 0, 0)     # right stopped
+    elif li and not ri:
+        if lo:
+            # ── lo+li : medium left → RIGHT arc ──────────────────────────────
+            bot._apply_motors(spd, spd, 0, 0)
+        else:
+            # ── li only : slight left → gentle RIGHT ─────────────────────────
+            bot._apply_motors(spd, spd, slow, slow)
 
-    elif error == 3:
-        # Moderate right drift (ri+ro on tape) → medium LEFT arc
-        bot._apply_motors(0, 0, spd, spd)     # left stopped
+    elif ro:
+        # ── ro only : far right edge → LEFT arc (strong) ─────────────────────
+        bot._apply_motors(0, 0, spd, spd)
 
-    elif error == -2:
-        # AT LEFT EDGE (lo only) → STRONG pivot RIGHT
-        bot._apply_motors(spd, spd, -HARD_TURN_SPEED, -HARD_TURN_SPEED)
+    elif lo:
+        # ── lo only : far left edge → RIGHT arc (strong) ─────────────────────
+        bot._apply_motors(spd, spd, 0, 0)
 
-    else:  # error == 2 or any other positive
-        # AT RIGHT EDGE (ro only) → STRONG pivot LEFT
-        bot._apply_motors(-HARD_TURN_SPEED, -HARD_TURN_SPEED, spd, spd)
+    else:
+        bot.forward(spd)                        # fallback
 
 
 # ── red tape detector (background thread) ─────────────────────────────────────
 
 class RedTapeDetector:
-    """Grab USB camera frames in a daemon thread and flag red tape."""
-
     _RED_L1 = np.array([0,   120, 70], dtype=np.uint8)
     _RED_U1 = np.array([10,  255, 255], dtype=np.uint8)
     _RED_L2 = np.array([165, 120, 70], dtype=np.uint8)
@@ -152,7 +156,6 @@ class RedTapeDetector:
         self._thread.start()
 
     def check(self):
-        """Return True (and reset) if red tape was seen since last call."""
         with self._lock:
             val = self._detected
             self._detected = False
@@ -167,10 +170,10 @@ class RedTapeDetector:
             ret, frame = self._cap.read()
             if ret:
                 h = frame.shape[0]
-                floor_hsv = cv2.cvtColor(frame[h // 2:], cv2.COLOR_BGR2HSV)
+                floor = cv2.cvtColor(frame[h // 2:], cv2.COLOR_BGR2HSV)
                 mask = cv2.bitwise_or(
-                    cv2.inRange(floor_hsv, self._RED_L1, self._RED_U1),
-                    cv2.inRange(floor_hsv, self._RED_L2, self._RED_U2),
+                    cv2.inRange(floor, self._RED_L1, self._RED_U1),
+                    cv2.inRange(floor, self._RED_L2, self._RED_U2),
                 )
                 if cv2.countNonZero(mask) >= RED_PIXEL_THRESHOLD:
                     with self._lock:
@@ -178,30 +181,28 @@ class RedTapeDetector:
             time.sleep(RED_CHECK_INTERVAL)
 
 
-# ── line-lost recovery ────────────────────────────────────────────────────────
+# ── recovery ──────────────────────────────────────────────────────────────────
 
 def _log(msg):
-    """Print clearing the debug \r line first."""
     print(f"\n{msg}")
 
 
-def recover_line(bot, last_error, log):
-    """Slow spin toward last known direction until an inner sensor fires.
+def recover_line(bot, last_sensors, log):
+    """Spin toward last known tape direction until an inner sensor fires."""
+    lo, li, ri, ro = last_sensors
+    # spin toward whichever side last saw the tape
+    spin_left = int(ri) + int(ro) > int(lo) + int(li)
 
-    Returns True if re-acquired, False if timed out.
-    """
     log("line lost — searching...")
     bot.set_all_leds_color(Color.YELLOW)
-
-    spin_left = (last_error <= 0)
-    deadline  = time.time() + SEARCH_TIMEOUT_S
+    deadline = time.time() + SEARCH_TIMEOUT_S
 
     while time.time() < deadline:
-        _, li, ri, _, _, _, _ = read_sensors(bot)
-        if li or ri:                           # inner sensor = properly on tape
+        _, li2, ri2, _, _, _ = read_sensors(bot)
+        if li2 or ri2:                       # inner sensor = properly on tape
             bot.stop()
             time.sleep(0.1)
-            bot.forward(MISS_CREEP_SPEED)      # creep forward to centre
+            bot.forward(MISS_CREEP_SPEED)
             time.sleep(0.15)
             bot.stop()
             time.sleep(RECOVER_SETTLE_S)
@@ -223,43 +224,39 @@ def recover_line(bot, last_error, log):
 # ── stop-marker scan ──────────────────────────────────────────────────────────
 
 def do_scan(bot, cam, log):
-    """Stop, beep, scan (or wait if SKIP_SCAN), then clear the cross-mark."""
     bot.set_all_leds_color(Color.BLUE)
     bot.beep(0.1)
     if SKIP_SCAN:
-        log("stop marker — SKIP_SCAN=True, waiting 1 s")
+        log("stop marker — waiting 1 s (SKIP_SCAN=True)")
         time.sleep(1.0)
-    else:
-        log("stop marker → 360° scan (do not touch the robot)")
-        try:
-            from pointcloud import scan360
-            _, ply = scan360.scan_and_build(bot, cam, log=log)
-            log(f"scan complete → {ply}")
-            bot.beep(0.15)
-        except Exception as exc:
-            log(f"scan error (continuing): {exc}")
+        return
+    log("stop marker → 360° scan")
+    try:
+        from pointcloud import scan360
+        _, ply = scan360.scan_and_build(bot, cam, log=log)
+        log(f"scan complete → {ply}")
+        bot.beep(0.15)
+    except Exception as exc:
+        log(f"scan error: {exc}")
 
 
-# ── main control loop ─────────────────────────────────────────────────────────
+# ── main loop ─────────────────────────────────────────────────────────────────
 
 def run(bot, cam=None, log=_log):
-    """Follow the black tape. Stop on red tape cross (or IR all-on in test mode)."""
     log("Line-following started. Ctrl-C to stop.")
-    log(f"BASE={BASE_SPEED} MIN={MIN_SPEED} TURN={TURN_SPEED} "
-        f"HARD={HARD_TURN_SPEED} SKIP_SCAN={SKIP_SCAN}")
+    log(f"BASE={BASE_SPEED} MIN={MIN_SPEED} TURN={TURN_SPEED} SKIP_SCAN={SKIP_SCAN}")
 
-    # Start red-tape detector only for real runs
     red_detector = None
     if not SKIP_SCAN:
         try:
             red_detector = RedTapeDetector()
-            log("Red-tape camera detector started.")
+            log("Red-tape detector started.")
         except Exception as e:
-            log(f"Camera detector failed ({e}), falling back to IR stop-marker.")
+            log(f"Camera detector failed ({e}) — using IR fallback.")
 
     bot.set_all_leds_color(Color.GREEN)
 
-    last_error     = 0
+    last_sensors   = (False, False, False, False)
     debounce_until = 0.0
     miss_count     = 0
     in_recovery    = False
@@ -267,22 +264,23 @@ def run(bot, cam=None, log=_log):
 
     try:
         while True:
-            lo, li, ri, ro, error, all_on, all_off = read_sensors(bot)
+            lo, li, ri, ro, all_on, all_off = read_sensors(bot)
             now = time.time()
 
-            # ── debug print ───────────────────────────────────────────────────
+            # ── debug ─────────────────────────────────────────────────────────
             if DEBUG_EVERY and tick % DEBUG_EVERY == 0:
-                spd = _adaptive_speed(error)
-                state = "STOP" if all_on else (f"MISS×{miss_count}" if all_off else f"spd={spd}")
+                spd = _speed(lo, li, ri, ro)
+                n   = int(lo)+int(li)+int(ri)+int(ro)
+                state = "STOP" if all_on else (f"MISS×{miss_count}" if all_off else f"n={n} spd={spd}")
                 print(f"lo={int(lo)} li={int(li)} ri={int(ri)} ro={int(ro)}"
-                      f"  err={error:+d}  {state}          ", end="\r")
+                      f"  {state}          ", end="\r")
             tick += 1
 
-            # ── stop marker detection ─────────────────────────────────────────
-            use_red = red_detector is not None
+            # ── stop marker ───────────────────────────────────────────────────
+            use_cam = red_detector is not None
             stop_triggered = (
-                (use_red  and red_detector.check()) or
-                (not use_red and all_on)
+                (use_cam  and red_detector.check()) or
+                (not use_cam and all_on)
             ) and now >= debounce_until
 
             if stop_triggered:
@@ -294,7 +292,7 @@ def run(bot, cam=None, log=_log):
                 time.sleep(CLEAR_MARKER_S)
                 bot.stop()
                 debounce_until = time.time() + STOP_DEBOUNCE_S
-                last_error = 0
+                last_sensors = (False, False, False, False)
                 bot.set_all_leds_color(Color.GREEN)
                 continue
 
@@ -304,8 +302,8 @@ def run(bot, cam=None, log=_log):
                     miss_count += 1
 
                 if miss_count <= MISS_CREEP_TICKS:
-                    # Phase 1: keep steering at creep speed (bridges small gaps)
-                    steer(bot, last_error, MISS_CREEP_SPEED)
+                    # Phase 1: keep last steering at creep speed
+                    steer(bot, *last_sensors, MISS_CREEP_SPEED)
                     time.sleep(LOOP_PAUSE)
                     continue
 
@@ -313,20 +311,20 @@ def run(bot, cam=None, log=_log):
                 if not in_recovery:
                     in_recovery = True
                     bot.stop()
-                    if not recover_line(bot, last_error, log):
+                    if not recover_line(bot, last_sensors, log):
                         break
                     miss_count  = 0
                     in_recovery = False
-                    last_error  = 0
+                    last_sensors = (False, False, False, False)
                 else:
                     time.sleep(LOOP_PAUSE)
                 continue
 
             # ── normal tracking ───────────────────────────────────────────────
-            miss_count  = 0
-            in_recovery = False
-            last_error  = error
-            steer(bot, error)
+            miss_count   = 0
+            in_recovery  = False
+            last_sensors = (lo, li, ri, ro)
+            steer(bot, lo, li, ri, ro)
             time.sleep(LOOP_PAUSE)
 
     finally:
@@ -334,21 +332,20 @@ def run(bot, cam=None, log=_log):
             red_detector.close()
 
 
-# ── calibration mode ──────────────────────────────────────────────────────────
+# ── calibrate ─────────────────────────────────────────────────────────────────
 
 def calibrate():
-    """Live sensor readout — verify polarity before a real run."""
     print("=== Calibration — Ctrl-C to exit ===")
-    print("Move robot on/off tape: True=black tape  False=floor")
-    print(f"{'L_OUT':>8}  {'L_IN':>6}  {'R_IN':>6}  {'R_OUT':>7}  {'error':>6}  state")
-    print("-" * 55)
+    print("Move robot on/off tape: True=black  False=floor")
+    print(f"{'L_OUT':>8}  {'L_IN':>6}  {'R_IN':>6}  {'R_OUT':>7}  state")
+    print("-" * 50)
     with RasBot() as bot:
         try:
             while True:
-                lo, li, ri, ro, error, all_on, all_off = read_sensors(bot)
+                lo, li, ri, ro, all_on, all_off = read_sensors(bot)
                 state = "STOP MARKER" if all_on else ("LINE LOST" if all_off else "tracking")
-                print(f"{str(lo):>8}  {str(li):>6}  {str(ri):>6}  {str(ro):>7}"
-                      f"  {error:>+6}  {state}          ", end="\r")
+                print(f"{str(lo):>8}  {str(li):>6}  {str(ri):>6}  {str(ro):>7}  {state}          ",
+                      end="\r")
                 time.sleep(0.1)
         except KeyboardInterrupt:
             print("\nDone.")
@@ -370,7 +367,7 @@ def main():
         try:
             run(bot, cam)
         except KeyboardInterrupt:
-            print("\nStopped by user.")
+            print("\nStopped.")
         finally:
             if cam:
                 cam.close()
