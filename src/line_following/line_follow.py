@@ -36,16 +36,20 @@ from camera.rs_capture import StereoCapture
 from pointcloud import scan360
 
 # ── tunables ──────────────────────────────────────────────────────────────────
-BASE_SPEED       = 55    # straight-ahead speed (0–255)
-TURN_SPEED       = 25    # how much to reduce the slow side for gentle correction
-HARD_TURN_SPEED  = 45    # how much to reduce the slow side for sharp correction
-SEARCH_SPEED     = 35    # spin speed during line-lost recovery
+BASE_SPEED       = 50    # straight-ahead speed (0–255)
+TURN_SPEED       = 20    # how much to reduce the slow side for gentle correction
+HARD_TURN_SPEED  = 35    # how much to reduce the slow side for sharp correction
+SEARCH_SPEED     = 25    # spin speed during line-lost recovery (slow = don't overshoot)
 LOOP_HZ          = 50
 LOOP_PAUSE       = 1.0 / LOOP_HZ
 
 # "Line lost" debounce: only enter recovery after this many consecutive
 # all_off reads. Prevents a brief sensor gap from triggering a full spin.
-MISS_THRESHOLD   = 5     # ~100 ms at 50 Hz
+MISS_THRESHOLD   = 12    # ~240 ms at 50 Hz — enough to bridge small tape gaps
+
+# After re-acquiring the line in recovery, stop and settle this long
+# before resuming forward motion (prevents overshoot re-triggering recovery).
+RECOVER_SETTLE_S = 0.2
 
 # After a scan, ignore stop-marker triggers for this many seconds.
 STOP_DEBOUNCE_S  = 1.5
@@ -136,6 +140,9 @@ def recover_line(bot, last_error, log):
     while time.time() < deadline:
         _, _, _, _, _, all_on, all_off = read_sensors(bot)
         if not all_off:
+            # Found it — STOP and settle before resuming so we don't overshoot.
+            bot.stop()
+            time.sleep(RECOVER_SETTLE_S)
             log("line re-acquired")
             bot.set_all_leds_color(Color.GREEN)
             return True
@@ -201,7 +208,8 @@ def run(bot, cam, log=print):
         if all_off:
             miss_count += 1
             if miss_count < MISS_THRESHOLD:
-                # brief gap — keep moving, don't panic yet
+                # Brief gap — keep the last steer command active, don't panic.
+                steer(bot, last_error)
                 time.sleep(LOOP_PAUSE)
                 continue
             # confirmed lost
