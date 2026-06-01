@@ -53,10 +53,14 @@ SCAN_BRAKE_TAP    = 0.0      # seconds of reverse pulse after each step to kill 
 SCAN_DIR          = 1        # +1 = rotate CCW (rotate_left); -1 = CW. Merge follows this.
 
 # ── visual closed-loop rotation (the overshoot fix: stop when the CAMERA says ~step) ──
-SCAN_CLOSED_LOOP  = True     # rotate by vision (True) instead of blind timing (False)
-SCAN_PULSE_DEG    = 10       # nominal degrees per small rotation pulse
-SCAN_ANGLE_TOL    = 3        # stop once within this many deg of the target step
-SCAN_MAX_PULSES   = 12       # safety cap on pulses per step (never spin forever)
+SCAN_CLOSED_LOOP   = True    # rotate by vision (True) instead of blind timing (False)
+SCAN_MIN_PULSE_DEG = 5       # smallest rotation pulse (enough to beat motor stiction)
+SCAN_MAX_PULSE_DEG = 15      # largest single pulse (used early; pulses shrink near target)
+SCAN_ANGLE_TOL     = 2       # stop once within this many deg of the target step
+SCAN_STEP_BUDGET   = 1.25    # HARD cap on rotation per step = SCAN_STEP_BUDGET x target, so
+                             #   a bad vision reading can't make one step spin past ~1.25x.
+SCAN_YAW_GAIN      = 1.0     # correct a SYSTEMATIC vision bias: raise above 1.0 if the robot
+                             #   consistently OVER-rotates, lower below 1.0 if it UNDER-rotates.
 
 # ── cloud tunables ──────────────────────────────────────────────────────────────
 VOXEL = 0.01                 # 1 cm final resolution
@@ -380,34 +384,46 @@ def _K_from_cam(cam):
 
 def rotate_by_vision(bot, cam, target_deg, K, direction=SCAN_DIR,
                      rotate_speed=SCAN_ROTATE_SPEED, sec_per_deg=SCAN_SEC_PER_DEG,
-                     pulse_deg=SCAN_PULSE_DEG, tol=SCAN_ANGLE_TOL,
-                     max_pulses=SCAN_MAX_PULSES, settle=0.2, log=print):
-    """Rotate in small pulses until the CAMERA says we have turned ~target_deg about the
-    vertical axis. Returns the achieved yaw magnitude (deg).
+                     min_pulse=SCAN_MIN_PULSE_DEG, max_pulse=SCAN_MAX_PULSE_DEG,
+                     tol=SCAN_ANGLE_TOL, budget=SCAN_STEP_BUDGET, gain=SCAN_YAW_GAIN,
+                     brake_tap=SCAN_BRAKE_TAP, settle=0.2, log=print):
+    """Rotate in pulses until the CAMERA says we have turned ~target_deg about the vertical
+    axis (measure cumulative yaw vs the pre-rotation frame). Returns the achieved yaw (deg).
 
-    This is the overshoot fix: instead of trusting the timer, after each small pulse we
-    measure the cumulative yaw from the pre-rotation frame (yaw_from_images). If a pulse
-    can't be measured (textureless view), we dead-reckon it from the timer, so it degrades
-    to the old timed rotation instead of stalling.
+    Anti-overshoot, in three layers:
+      * pulses SHRINK as we approach the target (each is sized to the remaining angle), so
+        the last pulse barely overshoots instead of a fixed big jump;
+      * a HARD per-step time budget (budget x target) ends the step even if vision keeps
+        reading low, so one bad step can never spin past ~budget x the target;
+      * an optional brake_tap drives the wheels back briefly to cancel coast.
+    `gain` corrects a systematic vision bias. A failed/absurd read dead-reckons from the timer.
     """
-    spin = bot.rotate_left if direction >= 0 else bot.rotate_right
-    pulse_time = sec_per_deg * pulse_deg
+    spin  = bot.rotate_left  if direction >= 0 else bot.rotate_right
+    brake = bot.rotate_right if direction >= 0 else bot.rotate_left
     ref = cam.grab_ir()                              # the view before this step's rotation
     achieved = 0.0
-    for _ in range(max_pulses):
-        if achieved >= target_deg - tol:
+    spent = 0.0
+    max_spin = sec_per_deg * target_deg * budget     # hard cap on total spin TIME per step
+    for _ in range(30):                              # final safety bound on iterations
+        if achieved >= target_deg - tol or spent >= max_spin:
             break
+        pulse_deg = max(min_pulse, min(max_pulse, target_deg - achieved))   # shrink near target
+        pulse_time = sec_per_deg * pulse_deg
         spin(rotate_speed)
         time.sleep(pulse_time)
+        if brake_tap > 0:
+            bot.stop(); brake(rotate_speed); time.sleep(brake_tap)
         bot.stop()
-        time.sleep(settle)                           # stop shaking before measuring
+        spent += pulse_time
+        time.sleep(settle)                           # let it stop shaking before measuring
         yaw, inliers = yaw_from_images(ref, cam.grab_ir(), K)
         if yaw is not None and inliers >= MEASURE_MIN_INLIERS and abs(yaw) <= target_deg * 1.6:
-            achieved = abs(yaw)                      # absolute angle from the reference frame
+            achieved = abs(yaw) * gain               # absolute angle from the reference frame
         else:
-            achieved += pulse_deg                    # vision failed/absurd -> dead-reckon this pulse
+            achieved += pulse_deg                    # vision failed/absurd -> dead-reckon
     bot.stop()
-    log(f"    turned ~{achieved:.0f} deg (target {target_deg:.0f})")
+    log(f"    turned ~{achieved:.0f} deg (target {target_deg:.0f})"
+        + ("  [time-capped]" if spent >= max_spin else ""))
     return achieved
 
 
@@ -448,13 +464,15 @@ def run_scan(bot, cam, shots=SCAN_SHOTS, rotate_speed=SCAN_ROTATE_SPEED,
         if i < shots - 1:
             if closed_loop:
                 turned = rotate_by_vision(bot, cam, step_angle, K, direction=direction,
-                                          rotate_speed=rotate_speed,
-                                          sec_per_deg=sec_per_deg, log=log)
+                                          rotate_speed=rotate_speed, sec_per_deg=sec_per_deg,
+                                          brake_tap=brake_tap, log=log)
             else:
                 _rotate_step(bot, rotate_speed, sec_per_deg * step_angle, direction, brake_tap)
                 turned = step_angle
             cumulative += turned
     bot.stop()
+    log(f"  scan complete: {shots} shots, total rotation ~{cumulative:.0f} deg "
+        f"(expected ~{step_angle * (shots - 1):.0f} for {shots} shots)")
     return session
 
 
