@@ -28,6 +28,7 @@ def configure(cap, use_mjpg):
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  W)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, H)
     cap.set(cv2.CAP_PROP_FPS,          FPS)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE,   1)   # keep only newest frame -> less lag
     # warm up + sanity-check brightness; black MJPG decode -> mean ~0
     ok = False
     for _ in range(5):
