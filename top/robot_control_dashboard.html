@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RasotV2 Robot Control Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1e1e1e;
+            color: #e0e0e0;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .container {
+            display: flex;
+            height: 100vh;
+            gap: 15px;
+            padding: 15px;
+        }
+
+        /* Left Panel */
+        .left-panel {
+            flex: 0 0 450px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            overflow-y: auto;
+        }
+
+        /* Right Panel - RTSP Stream */
+        .right-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .stream-container {
+            flex: 1;
+            background: #0a0a0a;
+            border-radius: 8px;
+            overflow: hidden;
+            border: 2px solid #444;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .stream-container img,
+        .stream-container video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        .stream-status {
+            padding: 10px;
+            background: #2a2a2a;
+            border-radius: 4px;
+            font-size: 12px;
+            text-align: center;
+        }
+
+        /* Keyboard Section */
+        .keyboard-section {
+            background: #2a2a2a;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #444;
+        }
+
+        .section-title {
+            font-size: 14px;
+            font-weight: bold;
+            margin-bottom: 12px;
+            color: #64b5f6;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .keyboard-layout {
+            display: grid;
+            gap: 4px;
+            margin-bottom: 15px;
+        }
+
+        .key-row {
+            display: flex;
+            gap: 4px;
+        }
+
+        .key {
+            flex: 1;
+            padding: 8px;
+            background: #3a3a3a;
+            border: 1px solid #555;
+            border-radius: 4px;
+            text-align: center;
+            font-size: 11px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.1s ease;
+            user-select: none;
+            min-height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .key:hover {
+            background: #4a4a4a;
+            border-color: #666;
+        }
+
+        .key.pressed {
+            background: #ff3333;
+            border-color: #ff1111;
+            box-shadow: 0 0 12px rgba(255, 51, 51, 0.6);
+            transform: scale(0.95);
+        }
+
+        /* Key types */
+        .key.movement {
+            background: #2196f3;
+            border-color: #1976d2;
+            color: white;
+        }
+
+        .key.movement.pressed {
+            background: #ff3333;
+            border-color: #ff1111;
+        }
+
+        .key.rotation {
+            background: #ff9800;
+            border-color: #f57c00;
+            color: white;
+        }
+
+        .key.rotation.pressed {
+            background: #ff3333;
+            border-color: #ff1111;
+        }
+
+        .key.action {
+            background: #4caf50;
+            border-color: #388e3c;
+            color: white;
+        }
+
+        .key.action.pressed {
+            background: #ff3333;
+            border-color: #ff1111;
+        }
+
+        .key.mode {
+            background: #9c27b0;
+            border-color: #7b1fa2;
+            color: white;
+        }
+
+        .key.mode.pressed {
+            background: #ff3333;
+            border-color: #ff1111;
+        }
+
+        .spacer {
+            flex: 2;
+        }
+
+        /* Mode Section */
+        .mode-section {
+            background: #2a2a2a;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #444;
+        }
+
+        .mode-display {
+            font-size: 24px;
+            font-weight: bold;
+            text-align: center;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+        }
+
+        .mode-display.manual {
+            background: #2196f3;
+            color: white;
+        }
+
+        .mode-display.autonomous {
+            background: #4caf50;
+            color: white;
+        }
+
+        .mode-info {
+            font-size: 12px;
+            text-align: center;
+            color: #aaa;
+        }
+
+        /* Hotkeys Section */
+        .hotkeys-section {
+            background: #2a2a2a;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #444;
+        }
+
+        .hotkey-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .hotkey-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px;
+            background: #3a3a3a;
+            border-radius: 4px;
+            border-left: 3px solid #2196f3;
+            font-size: 12px;
+        }
+
+        .hotkey-item.rotation {
+            border-left-color: #ff9800;
+        }
+
+        .hotkey-item.action {
+            border-left-color: #4caf50;
+        }
+
+        .hotkey-item.mode {
+            border-left-color: #9c27b0;
+        }
+
+        .hotkey-key {
+            font-weight: bold;
+            background: #1a1a1a;
+            padding: 2px 6px;
+            border-radius: 3px;
+            min-width: 30px;
+            text-align: center;
+        }
+
+        .hotkey-description {
+            flex: 1;
+        }
+
+        /* Scrollbar */
+        .left-panel::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .left-panel::-webkit-scrollbar-track {
+            background: #2a2a2a;
+        }
+
+        .left-panel::-webkit-scrollbar-thumb {
+            background: #555;
+            border-radius: 3px;
+        }
+
+        .left-panel::-webkit-scrollbar-thumb:hover {
+            background: #777;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Configuration Panel (hidden) -->
+        <div id="configPanel" style="display: none; position: fixed; top: 10px; right: 10px; background: #2a2a2a; padding: 15px; border-radius: 8px; border: 1px solid #444; z-index: 1000; min-width: 250px;">
+            <div style="font-size: 12px; margin-bottom: 10px;">
+                <label>Stream IP:Port</label><br>
+                <input type="text" id="streamUrlInput" value="localhost:8000" style="width: 100%; padding: 5px; background: #3a3a3a; color: #fff; border: 1px solid #555; border-radius: 4px; margin-top: 5px;">
+            </div>
+            <button onclick="applyStreamConfig()" style="width: 100%; padding: 8px; background: #64b5f6; color: #000; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">Connect Stream</button>
+            <button onclick="toggleConfig()" style="width: 100%; padding: 8px; background: #555; color: #fff; border: none; border-radius: 4px; cursor: pointer; margin-top: 5px;">Close</button>
+        </div>
+        <button id="configBtn" onclick="toggleConfig()" style="position: fixed; bottom: 15px; right: 15px; padding: 10px 15px; background: #666; color: #fff; border: none; border-radius: 4px; cursor: pointer; z-index: 999; font-size: 12px;">⚙ Config</button>
+
+        <!-- LEFT PANEL -->
+        <div class="left-panel">
+            <!-- Mode Display -->
+            <div class="mode-section">
+                <div class="section-title">Current Mode</div>
+                <div class="mode-display manual" id="modeDisplay">MANUAL MODE</div>
+                <div class="mode-info">Press M to toggle mode</div>
+            </div>
+
+            <!-- Keyboard Layout -->
+            <div class="keyboard-section">
+                <div class="section-title">Control Layout</div>
+                <div class="keyboard-layout">
+                    <!-- Movement Keys -->
+                    <div class="key-row">
+                        <div class="spacer"></div>
+                        <div class="key movement" data-key="w">W<br><span style="font-size: 9px;">↑ Forward</span></div>
+                        <div class="spacer"></div>
+                    </div>
+                    <div class="key-row">
+                        <div class="key movement" data-key="a">A<br><span style="font-size: 9px;">← Left</span></div>
+                        <div class="key movement" data-key="s">S<br><span style="font-size: 9px;">↓ Back</span></div>
+                        <div class="key movement" data-key="d">D<br><span style="font-size: 9px;">→ Right</span></div>
+                    </div>
+
+                    <!-- Rotation Keys -->
+                    <div class="key-row" style="margin-top: 8px;">
+                        <div class="key rotation" data-key="q">Q<br><span style="font-size: 9px;">⟲ Rotate L</span></div>
+                        <div class="key action" data-key=" ">SPACE<br><span style="font-size: 9px;">360° Capture</span></div>
+                        <div class="key rotation" data-key="e">E<br><span style="font-size: 9px;">⟳ Rotate R</span></div>
+                    </div>
+
+                    <!-- Mode Switch -->
+                    <div class="key-row" style="margin-top: 8px;">
+                        <div class="key mode" data-key="m">M<br><span style="font-size: 9px;">Toggle Mode</span></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Hotkeys Legend -->
+            <div class="hotkeys-section">
+                <div class="section-title">Active Hotkeys</div>
+                <div class="hotkey-list">
+                    <div class="hotkey-item">
+                        <span class="hotkey-description">Forward / Backward</span>
+                        <span class="hotkey-key">W / S</span>
+                    </div>
+                    <div class="hotkey-item">
+                        <span class="hotkey-description">Strafe Left / Right</span>
+                        <span class="hotkey-key">A / D</span>
+                    </div>
+                    <div class="hotkey-item rotation">
+                        <span class="hotkey-description">Rotate Left / Right</span>
+                        <span class="hotkey-key">Q / E</span>
+                    </div>
+                    <div class="hotkey-item action">
+                        <span class="hotkey-description">Capture 360° Cloud</span>
+                        <span class="hotkey-key">SPACE</span>
+                    </div>
+                    <div class="hotkey-item mode">
+                        <span class="hotkey-description">Switch Manual/Auto</span>
+                        <span class="hotkey-key">M</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- RIGHT PANEL -->
+        <div class="right-panel">
+            <div class="stream-container" id="streamContainer">
+                <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 300'%3E%3Crect fill='%23333' width='400' height='300'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' dy='.3em' fill='%23888' font-size='18'%3ERTSP Stream Placeholder%3C/text%3E%3Ctext x='50%25' y='55%25' text-anchor='middle' dy='.3em' fill='%23666' font-size='12'%3E(Configure stream URL)%3C/text%3E%3C/svg%3E" alt="RTSP Stream">
+            </div>
+            <div class="stream-status">
+                <span id="streamStatus">Status: Awaiting stream...</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // State management
+        const state = {
+            currentMode: 'manual',
+            activeKeys: new Set(),
+            keysDown: new Set(),
+            streamUrl: null
+        };
+
+        // Try to auto-detect stream URL from common local addresses
+        function autoDetectStream() {
+            const possibleHosts = [
+                'localhost:8000',
+                '127.0.0.1:8000',
+                'raspberrypi.local:8000',
+                'robot.local:8000'
+            ];
+
+            // Try to connect to first available host
+            for (const host of possibleHosts) {
+                const streamUrl = `http://${host}/stream.mjpg`;
+                testStreamConnection(streamUrl, (success) => {
+                    if (success) {
+                        initializeStream(streamUrl);
+                        document.getElementById('streamUrlInput').value = host;
+                    }
+                });
+            }
+        }
+
+        function testStreamConnection(url, callback) {
+            const img = new Image();
+            const timeout = setTimeout(() => callback(false), 2000);
+
+            img.onload = () => {
+                clearTimeout(timeout);
+                callback(true);
+            };
+
+            img.onerror = () => {
+                clearTimeout(timeout);
+                callback(false);
+            };
+
+            img.src = url + '?t=' + Date.now();
+        }
+
+        function toggleConfig() {
+            const panel = document.getElementById('configPanel');
+            panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+        }
+
+        function applyStreamConfig() {
+            const input = document.getElementById('streamUrlInput').value.trim();
+            if (!input) return;
+
+            const streamUrl = input.startsWith('http') ? input : `http://${input}/stream.mjpg`;
+            initializeStream(streamUrl);
+            toggleConfig();
+        }
+
+        // Keyboard event listeners
+        document.addEventListener('keydown', (e) => {
+            const key = e.key.toLowerCase();
+            if (state.keysDown.has(key)) return;
+
+            state.keysDown.add(key);
+
+            const keyElement = document.querySelector(`[data-key="${key}"]`);
+            if (keyElement) {
+                keyElement.classList.add('pressed');
+            }
+
+            if (key === 'm') {
+                state.currentMode = state.currentMode === 'manual' ? 'autonomous' : 'manual';
+                updateModeDisplay();
+            }
+
+            logAction(key);
+        });
+
+        document.addEventListener('keyup', (e) => {
+            const key = e.key.toLowerCase();
+            state.keysDown.delete(key);
+
+            const keyElement = document.querySelector(`[data-key="${key}"]`);
+            if (keyElement) {
+                keyElement.classList.remove('pressed');
+            }
+        });
+
+        // Mouse click handlers for keys
+        document.querySelectorAll('.key').forEach(keyElement => {
+            keyElement.addEventListener('mousedown', () => {
+                keyElement.classList.add('pressed');
+            });
+
+            keyElement.addEventListener('mouseup', () => {
+                keyElement.classList.remove('pressed');
+            });
+
+            keyElement.addEventListener('click', () => {
+                const key = keyElement.getAttribute('data-key');
+                if (key === 'm') {
+                    state.currentMode = state.currentMode === 'manual' ? 'autonomous' : 'manual';
+                    updateModeDisplay();
+                }
+            });
+        });
+
+        function updateModeDisplay() {
+            const modeDisplay = document.getElementById('modeDisplay');
+            if (state.currentMode === 'manual') {
+                modeDisplay.textContent = 'MANUAL MODE';
+                modeDisplay.className = 'mode-display manual';
+            } else {
+                modeDisplay.textContent = 'AUTONOMOUS MODE';
+                modeDisplay.className = 'mode-display autonomous';
+            }
+        }
+
+        function logAction(key) {
+            const actions = {
+                'w': '↑ Moving Forward',
+                'a': '← Moving Left',
+                's': '↓ Moving Backward',
+                'd': '→ Moving Right',
+                'q': '⟲ Rotating Left',
+                'e': '⟳ Rotating Right',
+                ' ': '📷 Capturing 360°',
+                'm': '🔄 Mode Toggle'
+            };
+
+            if (actions[key]) {
+                console.log(`[${new Date().toLocaleTimeString()}] ${actions[key]}`);
+            }
+        }
+
+        // Stream Configuration
+        function initializeStream(streamUrl) {
+            const streamContainer = document.getElementById('streamContainer');
+            const streamStatus = document.getElementById('streamStatus');
+
+            state.streamUrl = streamUrl;
+            streamStatus.textContent = 'Status: Connecting...';
+
+            const imgElement = document.createElement('img');
+            imgElement.src = streamUrl;
+            imgElement.style.width = '100%';
+            imgElement.style.height = '100%';
+            imgElement.style.objectFit = 'contain';
+
+            imgElement.onerror = () => {
+                streamStatus.textContent = '✗ Stream connection failed - check server is running';
+                streamStatus.style.color = '#ff6b6b';
+            };
+
+            imgElement.onload = () => {
+                streamStatus.textContent = '✓ Stream active - ' + streamUrl.split('/stream')[0];
+                streamStatus.style.color = '#4caf50';
+            };
+
+            streamContainer.innerHTML = '';
+            streamContainer.appendChild(imgElement);
+        }
+
+        // Initialize on load
+        window.addEventListener('load', () => {
+            updateModeDisplay();
+
+            // Check if stream URL is in URL params
+            const params = new URLSearchParams(window.location.search);
+            const streamParam = params.get('stream');
+
+            if (streamParam) {
+                const streamUrl = streamParam.startsWith('http') ? streamParam : `http://${streamParam}/stream.mjpg`;
+                initializeStream(streamUrl);
+                document.getElementById('streamUrlInput').value = streamParam;
+            } else {
+                // Try to auto-detect
+                autoDetectStream();
+            }
+        });
+
+        // Refresh stream periodically if connection is lost
+        setInterval(() => {
+            if (state.keysDown.size > 0) {
+                const pressedKeys = Array.from(state.keysDown).join(', ').toUpperCase();
+            }
+        }, 100);
+    </script>
+</body>
+</html>
