@@ -43,13 +43,16 @@ SEARCH_SPEED     = 25    # spin speed during line-lost recovery (slow = don't ov
 LOOP_HZ          = 50
 LOOP_PAUSE       = 1.0 / LOOP_HZ
 
-# "Line lost" debounce: only enter recovery after this many consecutive
-# all_off reads. Prevents a brief sensor gap from triggering a full spin.
-# 25 reads ≈ 500 ms — very tolerant of gaps and bumps.
-MISS_THRESHOLD   = 25
+# Phase 1 — brief gap: keep steering but slow down heavily (creep speed).
+# This bridges small tape gaps without flying off the end of the tape.
+MISS_CREEP_SPEED = 30    # speed during the creep phase
+MISS_CREEP_TICKS = 8     # ~160 ms at 50 Hz
 
-# After re-acquiring the line in recovery, stop and settle this long
-# before resuming forward motion (prevents overshoot re-triggering recovery).
+# Phase 2 — confirmed lost: stop completely, then spin to search.
+# If still not found after SEARCH_TIMEOUT_S → stop permanently.
+SEARCH_TIMEOUT_S = 3.0
+
+# After re-acquiring the line in recovery, stop and settle this long.
 RECOVER_SETTLE_S = 0.25
 
 # After a scan, ignore stop-marker triggers for this many seconds.
@@ -57,9 +60,6 @@ STOP_DEBOUNCE_S  = 1.5
 
 # How long to drive forward after a scan to clear the cross-mark.
 CLEAR_MARKER_S   = 0.35
-
-# How long to spin searching for a lost line before giving up.
-SEARCH_TIMEOUT_S = 5.0
 
 # Print live sensor state to the terminal every N loop ticks (0 = off).
 DEBUG_EVERY      = 10    # print every 200 ms — set 0 to silence
@@ -216,18 +216,21 @@ def run(bot, cam, log=print):
             bot.set_all_leds_color(Color.GREEN)
             continue
 
-        # ── line lost (debounced) ─────────────────────────────────────────────
+        # ── line lost ─────────────────────────────────────────────────────────
         if all_off:
             miss_count += 1
-            if miss_count < MISS_THRESHOLD:
-                # Brief gap — keep the last steer command active, don't panic.
-                steer(bot, last_error)
+
+            if miss_count <= MISS_CREEP_TICKS:
+                # Phase 1 — brief gap: creep forward very slowly.
+                # Slows the robot immediately so it cannot fly off the tape end.
+                bot.forward(MISS_CREEP_SPEED)
                 time.sleep(LOOP_PAUSE)
                 continue
-            # confirmed lost
+
+            # Phase 2 — confirmed lost: stop, then spin to search.
             bot.stop()
             if not recover_line(bot, last_error, log):
-                break
+                break   # line truly gone — stay stopped
             miss_count = 0
             last_error = 0
             continue
