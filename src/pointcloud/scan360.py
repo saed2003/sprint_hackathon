@@ -67,7 +67,7 @@ MIN_NEIGHBORS = 4            # outlier filter: keep a point only if >= this many
                              # neighbour voxel cells are also filled (0 disables). Kills flyers.
 
 # ── visual angle-measurement tunables (Track B: don't trust the timer) ───────────
-MEASURE_MIN_INLIERS = 30     # need at least this many pose inliers to trust a measured step
+MEASURE_MIN_INLIERS = 20     # need at least this many homography inliers to trust a step
 MEASURE_LO          = 0.5    # accept a measured step only if it is within
 MEASURE_HI          = 1.8    #   [LO, HI] x the nominal step (else fall back to nominal)
 
@@ -106,37 +106,50 @@ def read_angle(folder):
 
 
 def yaw_from_images(a, b, K):
-    """Measure the rotation (deg, about the vertical/Y axis) between two grayscale IR
-    images from their overlap. Pure OpenCV: ORB match -> essential matrix -> pose.
+    """Yaw (deg, about the vertical axis) between two grayscale IR images.
 
-    Returns (yaw_deg or None, n_inliers). yaw_deg is signed; callers use its magnitude
-    and apply the known rotation direction. None means "couldn't measure" (fall back).
-    Used both by the merge (shot-to-shot) and by the live closed-loop rotation.
+    We model the robot's in-place spin as a (near) pure camera rotation, for which
+    matched points are related by a HOMOGRAPHY  H = K R K^-1. So: ORB features matched
+    with Lowe's ratio test -> RANSAC homography -> R = K^-1 H K -> read the yaw.
+
+    Why not the essential matrix (the old way)? It needs camera TRANSLATION and
+    degenerates for in-place rotation, so almost no inliers survived (the "7-20 inliers
+    rejected" you saw). The homography is the correct, robust model here.
+
+    Returns (yaw_deg or None, n_inliers). yaw is signed; callers use its magnitude and
+    apply the known rotation direction. None means "couldn't measure" (fall back).
     """
     if a is None or b is None:
         return None, 0
 
-    orb = cv2.ORB_create(2000)
+    orb = cv2.ORB_create(4000)
     ka, da = orb.detectAndCompute(a, None)
     kb, db = orb.detectAndCompute(b, None)
-    if da is None or db is None or len(ka) < 8 or len(kb) < 8:
+    if da is None or db is None or len(ka) < 12 or len(kb) < 12:
         return None, 0
 
-    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-    matches = bf.match(da, db)
-    if len(matches) < 8:
+    # Lowe ratio test keeps many more good matches than crossCheck
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING)
+    good = [m for m, n in bf.knnMatch(da, db, k=2) if m.distance < 0.75 * n.distance]
+    if len(good) < 12:
         return None, 0
-    pa = np.float64([ka[m.queryIdx].pt for m in matches])
-    pb = np.float64([kb[m.trainIdx].pt for m in matches])
+    pa = np.float32([ka[m.queryIdx].pt for m in good])
+    pb = np.float32([kb[m.trainIdx].pt for m in good])
 
-    E, mask = cv2.findEssentialMat(pa, pb, K, method=cv2.RANSAC, prob=0.999, threshold=1.0)
-    if E is None or E.shape != (3, 3):
+    H, mask = cv2.findHomography(pa, pb, cv2.RANSAC, 3.0)
+    if H is None:
         return None, 0
-    n_in, R, _t, _mask = cv2.recoverPose(E, pa, pb, K, mask=mask)
-    # R is dominated by the yaw component since the robot spins about the vertical axis;
-    # extract it in the same convention as ry(): R[0,0]=cos, R[0,2]=sin.
+    inliers = int(mask.sum())
+
+    # H = K R K^-1  ->  R ~ K^-1 H K ; snap to the nearest rotation (SVD) and read the yaw
+    # in the same convention as ry(): R[0,0]=cos, R[0,2]=sin.
+    R = np.linalg.inv(K) @ H @ K
+    U, _, Vt = np.linalg.svd(R)
+    R = U @ Vt
+    if np.linalg.det(R) < 0:
+        R = U @ np.diag([1.0, 1.0, -1.0]) @ Vt
     yaw = math.degrees(math.atan2(R[0, 2], R[0, 0]))
-    return yaw, int(n_in)
+    return yaw, inliers
 
 
 def estimate_yaw(folder_a, folder_b, K):
@@ -331,6 +344,15 @@ def build_from_session(session_dir, step_angle=None, direction=SCAN_DIR,
         mode = "image-measured angle"
     log(f"  merged {len(dirs)} views ({mode}, swept {angles[-1]:.0f} deg) -> "
         f"{len(pts)} points (cleaned {before - len(pts)} flyers) -> {out}")
+
+    # also save a still preview image of the cloud (headless — works with no display)
+    try:
+        from pointcloud import view3d
+        prev = view3d.save_view(out, os.path.join(session_dir, "merged_360_preview.png"))
+        if prev:
+            log(f"  preview image -> {prev}")
+    except Exception as e:
+        log(f"  (preview render skipped: {e})")
     return out
 
 
@@ -380,10 +402,10 @@ def rotate_by_vision(bot, cam, target_deg, K, direction=SCAN_DIR,
         bot.stop()
         time.sleep(settle)                           # stop shaking before measuring
         yaw, inliers = yaw_from_images(ref, cam.grab_ir(), K)
-        if yaw is not None and inliers >= MEASURE_MIN_INLIERS:
+        if yaw is not None and inliers >= MEASURE_MIN_INLIERS and abs(yaw) <= target_deg * 1.6:
             achieved = abs(yaw)                      # absolute angle from the reference frame
         else:
-            achieved += pulse_deg                    # vision failed -> dead-reckon this pulse
+            achieved += pulse_deg                    # vision failed/absurd -> dead-reckon this pulse
     bot.stop()
     log(f"    turned ~{achieved:.0f} deg (target {target_deg:.0f})")
     return achieved

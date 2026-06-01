@@ -13,16 +13,19 @@ Per-frame back-projection (D405 intrinsics by default, override per folder):
 
 Folder layout this script expects:
     data/depth_map/
-        01/depth.png            (uint16 depth PNG)
-        02/depth.png
+        01/depth.png            (uint16 depth PNG)   OR
+        01/depth.npy            (uint16/float numpy array — preferred if present)
+        02/...
         ...
-        10/depth.png
+        10/...
     Optional per-folder override:  intrinsics.txt  (same format as captures/)
     Optional per-folder grayscale: ir.png          (used only for colorizing)
 
-Depth-PNG units:
-    - Auto-detected: uint16 -> millimeters; float / uint8 -> meters.
-    - Override with --units mm | m.
+Units:
+    - depth.npy: uses `depth_scale` from intrinsics.txt (raw * scale -> meters).
+                 If no intrinsics.txt, assumed already in meters.
+    - depth.png: auto-detected (uint16 -> mm, float -> meters);
+                 override with --units mm | m.
 
 Usage:
     .venv/bin/python src/pointcloud/build_from_depth_pngs.py
@@ -79,13 +82,17 @@ def load_intrinsics(folder):
     return intr
 
 
-def find_depth_png(folder):
-    """First PNG that looks like a depth map (depth.png preferred)."""
-    pref = os.path.join(folder, "depth.png")
-    if os.path.exists(pref):
-        return pref
+def find_depth_source(folder):
+    """Locate this folder's depth data. depth.npy wins over depth.png."""
+    npy = os.path.join(folder, "depth.npy")
+    if os.path.exists(npy):
+        return npy
+    png = os.path.join(folder, "depth.png")
+    if os.path.exists(png):
+        return png
     pngs = sorted(glob.glob(os.path.join(folder, "*.png")))
-    pngs = [p for p in pngs if "ir" not in os.path.basename(p).lower()]
+    pngs = [p for p in pngs if "ir" not in os.path.basename(p).lower()
+                              and "color" not in os.path.basename(p).lower()]
     return pngs[0] if pngs else None
 
 
@@ -105,20 +112,27 @@ def to_meters(depth_raw, units):
 
 
 def cloud_from_folder(folder, units):
-    """Back-project this folder's depth PNG into a cleaned Open3D cloud."""
-    depth_path = find_depth_png(folder)
+    """Back-project this folder's depth source into a cleaned Open3D cloud."""
+    depth_path = find_depth_source(folder)
     if depth_path is None:
-        raise SystemExit(f"No depth PNG found in {folder}")
+        raise SystemExit(f"No depth.npy or depth.png found in {folder}")
 
-    raw = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)
-    if raw is None:
-        raise SystemExit(f"Could not read {depth_path}")
-    if raw.ndim == 3:                 # accidental 3-channel — collapse
-        raw = raw[..., 0]
-
-    Z = to_meters(raw, units)
-    H, W = Z.shape
     intr = load_intrinsics(folder)
+
+    if depth_path.endswith(".npy"):
+        raw = np.load(depth_path)
+        # depth.npy uses the per-folder depth_scale (raw -> meters).
+        scale = intr.get("depth_scale", 1.0) or 1.0
+        Z = raw.astype(np.float32) * float(scale)
+    else:
+        raw = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)
+        if raw is None:
+            raise SystemExit(f"Could not read {depth_path}")
+        if raw.ndim == 3:                 # accidental 3-channel — collapse
+            raw = raw[..., 0]
+        Z = to_meters(raw, units)
+
+    H, W = Z.shape
     fx, fy, ppx, ppy = intr["fx"], intr["fy"], intr["ppx"], intr["ppy"]
 
     # If intrinsics were captured at a different resolution, scale to this image.
@@ -155,7 +169,7 @@ def cloud_from_folder(folder, units):
         o3d.geometry.KDTreeSearchParamHybrid(radius=VOXEL * 2, max_nn=30))
 
     print(f"  {os.path.basename(folder)}: {len(pcd.points)} points "
-          f"(depth {depth_path.split(os.sep)[-1]}, {W}x{H})")
+          f"(from {os.path.basename(depth_path)}, {W}x{H})")
     return pcd
 
 
@@ -228,10 +242,10 @@ def main():
     else:
         folders = sorted(
             d for d in glob.glob(os.path.join(DATA_DIR, "*"))
-            if os.path.isdir(d) and find_depth_png(d))
+            if os.path.isdir(d) and find_depth_source(d))
 
     if len(folders) < 2:
-        sys.exit(f"Need at least 2 depth PNGs under {DATA_DIR}/<NN>/depth.png "
+        sys.exit(f"Need at least 2 depth maps under {DATA_DIR}/<NN>/ "
                  f"(found {len(folders)}).")
 
     print(f"Building point cloud from {len(folders)} depth maps "
