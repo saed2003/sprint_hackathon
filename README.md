@@ -92,8 +92,8 @@ Both modes let the user incrementally build a collection of point clouds across 
 ```
   LAPTOP  (develop the perception)            RASPBERRY PI  (drive the robot)
   D405 over USB, pyrealsense2                  D405 + motors + sensors
-  capture.py / make_pointcloud.py /            the RasBot API (setup_and_api/api)
-  merge_clouds.py / render_cloud.py            bot.forward(), bot.capture_all(), ...
+  camera/ + pointcloud/ scripts                the RasBot API (setup_and_api/api)
+  (capture, make/merge/render cloud)           bot.forward(), bot.capture_all(), ...
 ```
 
 The RasBot API talks to the motors over **I2C (`smbus`)**, which only exists on the Pi — so you
@@ -101,30 +101,58 @@ The RasBot API talks to the motors over **I2C (`smbus`)**, which only exists on 
 with the D405 plugged in by USB, then run them on the Pi by swapping the frame source
 (`pyrealsense2` → `bot.capture_all()`). The math is identical.
 
-### Files
+### Project layout
 
-| File | Runs on | What it does |
-|---|---|---|
-| [`capture.py`](capture.py) | laptop | Capture depth + L/R IR from the D405, save into `captures/<timestamp>/`. |
-| [`make_pointcloud.py`](make_pointcloud.py) | laptop | One capture → a 3D point cloud (`cloud.ply`) by back-projection. |
-| [`merge_clouds.py`](merge_clouds.py) | laptop | Align several clouds with **ICP** and merge into one (`merged.ply`). |
-| [`render_cloud.py`](render_cloud.py) | laptop | Quick front + top-down preview PNG of a `.ply`. |
-| [`setup_and_api/`](setup_and_api/) | Pi | RasBot setup (`SETUP.md`) + the `rasbot.api` hardware API. |
-| [`D405_Depth_Point_Clouds.md`](D405_Depth_Point_Clouds.md) | — | Theory: how the D405 & stereo depth work. |
-| [`RUN_GUIDE.md`](RUN_GUIDE.md) | — | How to run everything (laptop + Pi). |
-| [`POINTCLOUD_GUIDE.md`](POINTCLOUD_GUIDE.md) | — | Copy-paste guide: per-photo clouds → merge → clean. |
+```
+sprint_hackathon/
+├── camera/          D405 capture code (camera drivers + capture)
+│   ├── rs_capture.py       StereoCapture: the shared D405 pipeline
+│   └── capture.py          standalone "ENTER = save a capture"
+├── wasd/            Mode 1 — manual control
+│   └── drive.py            WASD/QE teleop + R/T/Y/V scan keys (the conductor)
+├── line_following/  Mode 2 — autonomous line following (placeholder, to build)
+│   └── line_follow.py      scaffold using read_line_sensors() + the 360 scan
+├── pointcloud/      perception: build & view 3D point clouds
+│   ├── scan360.py          360 sweep + measured-angle merge (on the Pi)
+│   ├── view3d.py           orbit a .ply (numpy+cv2 viewer, on the Pi)
+│   ├── make_pointcloud.py  one capture → cloud.ply (laptop, Open3D)
+│   ├── merge_clouds.py     many captures → merged.ply via ICP (laptop)
+│   ├── render_cloud.py     static preview PNG (laptop)
+│   └── clean_captures.py   delete capture data to start fresh
+├── setup_and_api/   the official RasBot hardware API (+ Pi SETUP.md)
+│   └── api/                rasbot.api: movement, servos, sensors, camera over I2C
+├── rasbot/          import shim so `from rasbot.api import RasBot` works (api → ../setup_and_api/api)
+├── docs/            all guides, the brief, the work plan, sprint info
+└── captures/        camera output, created at runtime (git-ignored)
+```
+
+> **How imports work:** each runnable script puts the **project root** on `sys.path` and
+> imports across folders by name — `from camera.rs_capture import StereoCapture`,
+> `from pointcloud import scan360`, `from rasbot.api import RasBot`. Run scripts from the
+> project root, e.g. `python3 wasd/drive.py` or `.venv/bin/python pointcloud/make_pointcloud.py`.
+
+### Docs (in [`docs/`](docs/))
+
+| Doc | What it is |
+|---|---|
+| [RUN_GUIDE.md](docs/RUN_GUIDE.md) | How to run everything (laptop + Pi). |
+| [CHANGE_GUIDE.md](docs/CHANGE_GUIDE.md) | On-Pi 360 scan workflow (R/T/Y keys) + rotation calibration. |
+| [POINTCLOUD_GUIDE.md](docs/POINTCLOUD_GUIDE.md) | Code/architecture guide for the perception pipeline. |
+| [D405_Depth_Point_Clouds.md](docs/D405_Depth_Point_Clouds.md) | Theory: how the D405 & stereo depth work. |
+| [setup_and_api/SETUP.md](setup_and_api/SETUP.md) | Prepare the Raspberry Pi from a blank SD card. |
+| [setup_and_api/api/README.md](setup_and_api/api/README.md) | Full RasBot API reference. |
 
 ### How the pipeline works
 
 ```
   D405 (two IR cameras, 18 mm apart, factory-calibrated, NO projector)
-    │  capture.py
+    │  camera/capture.py
     ▼
   depth image + intrinsics (fx, fy, ppx, ppy, baseline, depth_scale)
-    │  make_pointcloud.py   —  X=(u-ppx)Z/fx,  Y=(v-ppy)Z/fy,  Z=depth
+    │  pointcloud/make_pointcloud.py   —  X=(u-ppx)Z/fx,  Y=(v-ppy)Z/fy,  Z=depth
     ▼
   one point cloud per viewpoint (cloud.ply)
-    │  merge_clouds.py  —  align overlapping views with ICP (seed the known rotation)
+    │  pointcloud/merge_clouds.py  —  align overlapping views with ICP (seed the known rotation)
     ▼
   one 360° point cloud per room location (merged.ply)   ← project goal
 ```
@@ -138,18 +166,18 @@ with the D405 plugged in by USB, then run them on the Pi by swapping the frame s
 ```bash
 uv venv --python 3.11 .venv          # pyrealsense2 has no wheels for Python 3.14
 uv pip install -r requirements.txt
-.venv/bin/python capture.py          # ENTER = save a capture, q = quit
-.venv/bin/python make_pointcloud.py  # newest capture -> cloud.ply + preview
+.venv/bin/python camera/capture.py              # ENTER = save a capture, q = quit
+.venv/bin/python pointcloud/make_pointcloud.py  # newest capture -> cloud.ply + preview
 ```
 
-See [`POINTCLOUD_GUIDE.md`](POINTCLOUD_GUIDE.md) for the full capture → merge workflow.
+See [`docs/POINTCLOUD_GUIDE.md`](docs/POINTCLOUD_GUIDE.md) for the full capture → merge workflow.
 
 ---
 
 ## Connecting to the Robot (Raspberry Pi)
 
 The Pi is headless — you reach it over WiFi by SSH. Credentials are in
-[`sprint info.txt`](sprint%20info.txt).
+[`docs/sprint info.txt`](docs/sprint%20info.txt).
 
 1. **Join the robot's WiFi** (SSID `Sprint9`) on your laptop.
 2. **SSH into the Pi** (hostname `sprint`, user `sprint`):
@@ -172,17 +200,18 @@ The Pi is headless — you reach it over WiFi by SSH. Credentials are in
        bot.forward(120); time.sleep(1); bot.stop()
        frames = bot.capture_all()        # color + depth(mm) + ir_left + ir_right (synced)
        intr   = bot.get_stereo_intrinsics()
-       # feed frames.depth + intr into the SAME back-projection as make_pointcloud.py
+       # feed frames.depth + intr into the SAME back-projection as pointcloud/make_pointcloud.py
    ```
 
 The brief's required API maps directly: `forward(speed)` → `bot.forward(speed)`,
 `capture_stereo()` → `bot.capture_stereo()`, `set_tilt(angle)` → `bot.set_tilt(angle)`. Full method
 list in [`setup_and_api/api/README.md`](setup_and_api/api/README.md).
 
-> Note: the Pi API uses **640×480** and returns **depth in millimeters** (the laptop `capture.py`
-> uses 848×480 and raw units). Same math — just mind the units when reusing code.
+> Note: the Pi API uses **640×480** and returns **depth in millimeters** (the laptop
+> `camera/capture.py` uses 848×480 and raw units). Same math — just mind the units when reusing code.
 
 ### Still to build
 1. Our own stereo depth from the IR pair (OpenCV `StereoSGBM`) — the brief's explicit requirement.
 2. The per-location rotate → capture → merge routine (seeded ICP) for the full 360° cloud.
-3. The two modes on the Pi: WASD manual control, and IR line-following with stop-markers.
+3. The two modes on the Pi: WASD manual control ([`wasd/`](wasd/), working) and IR line-following
+   with stop-markers ([`line_following/`](line_following/), scaffolded — see its README).

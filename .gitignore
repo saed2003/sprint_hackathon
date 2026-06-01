@@ -4,13 +4,14 @@ venv/
 __pycache__/
 *.pyc
 
-# Captured camera data (large, machine-specific — not committed)
-#captures/
-#test_capture/
+# Captured camera data (large, machine-specific — recreated at runtime)
+captures/
+test_capture/
 
-# Generated point clouds
-#*.ply
-#*.pcd
+# Generated point clouds / previews
+*.ply
+*.pcd
+merged_views.png
 
 # OS / editor
 .DS_Store
