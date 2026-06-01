@@ -84,11 +84,14 @@ def read_sensors(bot):
 
 
 def steer(bot, error, spd=None):
-    """Differential steering with optional speed override.
+    """4-level graduated steering — no sudden jumps.
 
     _apply_motors(lf, lr, rf, rr)
-    Gentle curve  : one side slowed, other full
-    Sharp turn    : one side reversed, other full → pivot in place
+
+    error  0 : straight
+    error ±1 : gentle curve   — one side slowed
+    error ±2 : medium arc     — one side fully stopped
+    error ±3 : strong pivot   — one side gently reversed
     """
     spd = spd if spd is not None else BASE_SPEED
 
@@ -96,22 +99,24 @@ def steer(bot, error, spd=None):
         bot.forward(spd)
 
     elif error == -1:
-        # Line slightly left → gentle curve left (slow left side)
         slow = max(0, spd - TURN_SPEED)
-        bot._apply_motors(slow, slow, spd, spd)
+        bot._apply_motors(slow, slow, spd, spd)          # left slow
 
     elif error == 1:
-        # Line slightly right → gentle curve right (slow right side)
         slow = max(0, spd - TURN_SPEED)
-        bot._apply_motors(spd, spd, slow, slow)
+        bot._apply_motors(spd, spd, slow, slow)          # right slow
 
-    elif error <= -2:
-        # Line hard left → pivot left (left side BACKWARD, right FORWARD)
-        bot._apply_motors(-HARD_TURN_SPEED, -HARD_TURN_SPEED, spd, spd)
+    elif error == -2:
+        bot._apply_motors(0, 0, spd, spd)                # left stopped
 
-    else:  # error >= 2
-        # Line hard right → pivot right (right side BACKWARD, left FORWARD)
-        bot._apply_motors(spd, spd, -HARD_TURN_SPEED, -HARD_TURN_SPEED)
+    elif error == 2:
+        bot._apply_motors(spd, spd, 0, 0)                # right stopped
+
+    elif error <= -3:
+        bot._apply_motors(-HARD_TURN_SPEED, -HARD_TURN_SPEED, spd, spd)  # left reversed
+
+    else:  # error >= 3
+        bot._apply_motors(spd, spd, -HARD_TURN_SPEED, -HARD_TURN_SPEED)  # right reversed
 
 
 def _log(msg):
@@ -131,10 +136,17 @@ def recover_line(bot, last_error, log):
     deadline  = time.time() + SEARCH_TIMEOUT_S
 
     while time.time() < deadline:
-        _, _, _, _, _, all_on, all_off = read_sensors(bot)
-        if not all_off:
+        _, li, ri, _, _, _, _ = read_sensors(bot)
+        # Require at least one INNER sensor — avoids stopping on a fleeting
+        # outer-edge touch that immediately goes off again after settling.
+        if li or ri:
             bot.stop()
-            time.sleep(RECOVER_SETTLE_S)   # settle so we don't overshoot
+            time.sleep(0.1)
+            # Creep forward briefly to center robot over the tape.
+            bot.forward(MISS_CREEP_SPEED)
+            time.sleep(0.15)
+            bot.stop()
+            time.sleep(0.1)
             log("line re-acquired")
             bot.set_all_leds_color(Color.GREEN)
             return True
