@@ -22,7 +22,7 @@ import sys
 # root (the folder that contains camera/, pointcloud/, rasbot/, ...) on sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.camera.rs_capture import StereoCapture
+from camera.rs_capture import StereoCapture
 
 
 def main():

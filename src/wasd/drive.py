@@ -41,8 +41,8 @@ import subprocess
 # project root = the folder that contains wasd/, camera/, pointcloud/, rasbot/, ...
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from rasbot.api import RasBot, Color
-from src.camera.rs_capture import StereoCapture
-from src.pointcloud import scan360
+from camera.rs_capture import StereoCapture
+from pointcloud import scan360
 
 # ── tunables ──────────────────────────────────────────────────────────────────
 SPEED_DEFAULT = 120
