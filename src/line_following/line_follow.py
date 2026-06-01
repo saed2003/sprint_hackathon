@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from setup_and_api.api import RasBot, Color
 
 # ── tunables ──────────────────────────────────────────────────────────────────
-BASE_SPEED   = 42    # straight-ahead speed when centred
+BASE_SPEED   = 35    # straight-ahead speed when centred
 MAX_SPEED    = 255
 MIN_SPEED    = 5     # keep wheels slightly spinning even during sharp turns
 
