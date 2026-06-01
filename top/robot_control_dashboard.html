@@ -66,7 +66,61 @@
             background: #2a2a2a;
             border-radius: 4px;
             font-size: 12px;
-            text-align: center;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .stream-status-text {
+            flex: 1;
+            min-width: 150px;
+        }
+
+        .stream-controls {
+            display: flex;
+            gap: 8px;
+        }
+
+        .btn {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 11px;
+            font-weight: bold;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+
+        .btn:hover:not(.btn-disabled) {
+            opacity: 0.8;
+            transform: translateY(-1px);
+        }
+
+        .btn:active:not(.btn-disabled) {
+            transform: translateY(0);
+        }
+
+        .btn-connect {
+            background: #4caf50;
+            color: white;
+        }
+
+        .btn-disconnect {
+            background: #f44336;
+            color: white;
+        }
+
+        .btn-config {
+            background: #2196f3;
+            color: white;
+        }
+
+        .btn-disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
         }
 
         /* Keyboard Section */
@@ -258,6 +312,63 @@
             flex: 1;
         }
 
+        /* Config Panel */
+        #configPanel {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            background: #2a2a2a;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #444;
+            z-index: 1000;
+            min-width: 280px;
+            max-width: 350px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        #configPanel.hidden {
+            display: none;
+        }
+
+        .config-group {
+            font-size: 12px;
+            margin-bottom: 12px;
+        }
+
+        .config-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: #64b5f6;
+            font-weight: bold;
+        }
+
+        .config-group input {
+            width: 100%;
+            padding: 6px;
+            background: #3a3a3a;
+            color: #fff;
+            border: 1px solid #555;
+            border-radius: 4px;
+            font-size: 11px;
+        }
+
+        .config-group input:focus {
+            outline: none;
+            border-color: #64b5f6;
+        }
+
+        .config-buttons {
+            display: flex;
+            gap: 8px;
+        }
+
+        .config-buttons .btn {
+            flex: 1;
+            padding: 8px;
+            font-size: 11px;
+        }
+
         /* Scrollbar */
         .left-panel::-webkit-scrollbar {
             width: 6px;
@@ -275,21 +386,72 @@
         .left-panel::-webkit-scrollbar-thumb:hover {
             background: #777;
         }
+
+        /* Loading spinner */
+        .spinner {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border: 2px solid #555;
+            border-top: 2px solid #64b5f6;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+            margin-right: 5px;
+            vertical-align: middle;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .status-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 5px;
+            vertical-align: middle;
+        }
+
+        .status-dot.running {
+            background: #4caf50;
+        }
+
+        .status-dot.stopped {
+            background: #f44336;
+        }
+
+        .status-dot.connecting {
+            background: #ff9800;
+            animation: spin 0.6s linear infinite;
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <!-- Configuration Panel (hidden) -->
-        <div id="configPanel" style="display: none; position: fixed; top: 10px; right: 10px; background: #2a2a2a; padding: 15px; border-radius: 8px; border: 1px solid #444; z-index: 1000; min-width: 250px;">
-            <div style="font-size: 12px; margin-bottom: 10px;">
-                <label>Stream IP:Port</label><br>
-                <input type="text" id="streamUrlInput" value="localhost:8000" style="width: 100%; padding: 5px; background: #3a3a3a; color: #fff; border: 1px solid #555; border-radius: 4px; margin-top: 5px;">
-            </div>
-            <button onclick="applyStreamConfig()" style="width: 100%; padding: 8px; background: #64b5f6; color: #000; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">Connect Stream</button>
-            <button onclick="toggleConfig()" style="width: 100%; padding: 8px; background: #555; color: #fff; border: none; border-radius: 4px; cursor: pointer; margin-top: 5px;">Close</button>
+    <!-- Config Panel -->
+    <div id="configPanel" class="hidden">
+        <div style="margin-bottom: 15px;">
+            <h3 style="color: #64b5f6; font-size: 14px; margin-bottom: 10px;">⚙ Server Configuration</h3>
         </div>
-        <button id="configBtn" onclick="toggleConfig()" style="position: fixed; bottom: 15px; right: 15px; padding: 10px 15px; background: #666; color: #fff; border: none; border-radius: 4px; cursor: pointer; z-index: 999; font-size: 12px;">⚙ Config</button>
 
+        <div class="config-group">
+            <label>Control Server IP:Port</label>
+            <input type="text" id="controlServerInput" value="localhost:9000" placeholder="e.g., 192.168.1.100:9000">
+        </div>
+
+        <div class="config-group">
+            <label>Stream IP:Port</label>
+            <input type="text" id="streamUrlInput" value="localhost:8000" placeholder="e.g., 192.168.1.100:8000">
+        </div>
+
+        <div class="config-buttons">
+            <button class="btn btn-connect" onclick="saveConfig()">Save</button>
+            <button class="btn btn-config" onclick="toggleConfig()">Close</button>
+        </div>
+    </div>
+
+    <div class="container">
         <!-- LEFT PANEL -->
         <div class="left-panel">
             <!-- Mode Display -->
@@ -360,15 +522,30 @@
         <!-- RIGHT PANEL -->
         <div class="right-panel">
             <div class="stream-container" id="streamContainer">
-                <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 300'%3E%3Crect fill='%23333' width='400' height='300'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' dy='.3em' fill='%23888' font-size='18'%3ERTSP Stream Placeholder%3C/text%3E%3Ctext x='50%25' y='55%25' text-anchor='middle' dy='.3em' fill='%23666' font-size='12'%3E(Configure stream URL)%3C/text%3E%3C/svg%3E" alt="RTSP Stream">
+                <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 300'%3E%3Crect fill='%23333' width='400' height='300'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' dy='.3em' fill='%23888' font-size='18'%3ECamera Stream%3C/text%3E%3Ctext x='50%25' y='55%25' text-anchor='middle' dy='.3em' fill='%23666' font-size='12'%3E(Click Connect to start)%3C/text%3E%3C/svg%3E" alt="Camera Stream">
             </div>
             <div class="stream-status">
-                <span id="streamStatus">Status: Awaiting stream...</span>
+                <div class="stream-status-text">
+                    <span class="status-dot stopped"></span><span id="streamStatus">Status: Disconnected</span>
+                </div>
+                <div class="stream-controls">
+                    <button class="btn btn-connect" onclick="connectStream()" id="connectBtn">Connect</button>
+                    <button class="btn btn-disconnect btn-disabled" onclick="disconnectStream()" id="disconnectBtn" disabled>Disconnect</button>
+                    <button class="btn btn-config" onclick="toggleConfig()">⚙</button>
+                </div>
             </div>
         </div>
     </div>
 
     <script>
+        // Configuration state
+        const config = {
+            controlServer: localStorage.getItem('controlServer') || 'localhost:9000',
+            streamServer: localStorage.getItem('streamServer') || 'localhost:8000',
+            streamConnected: false,
+            controlConnected: false
+        };
+
         // State management
         const state = {
             currentMode: 'manual',
@@ -377,56 +554,158 @@
             streamUrl: null
         };
 
-        // Try to auto-detect stream URL from common local addresses
-        function autoDetectStream() {
-            const possibleHosts = [
-                'localhost:8000',
-                '127.0.0.1:8000',
-                'raspberrypi.local:8000',
-                'robot.local:8000'
-            ];
+        // DOM Elements
+        const configPanel = document.getElementById('configPanel');
+        const controlServerInput = document.getElementById('controlServerInput');
+        const streamUrlInput = document.getElementById('streamUrlInput');
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const streamStatus = document.getElementById('streamStatus');
+        const statusDot = document.querySelector('.status-dot');
 
-            // Try to connect to first available host
-            for (const host of possibleHosts) {
-                const streamUrl = `http://${host}/stream.mjpg`;
-                testStreamConnection(streamUrl, (success) => {
-                    if (success) {
-                        initializeStream(streamUrl);
-                        document.getElementById('streamUrlInput').value = host;
-                    }
+        // Load saved config
+        window.addEventListener('load', () => {
+            controlServerInput.value = config.controlServer;
+            streamUrlInput.value = config.streamServer;
+            updateModeDisplay();
+            checkControlServerHealth();
+        });
+
+        function toggleConfig() {
+            configPanel.classList.toggle('hidden');
+        }
+
+        function saveConfig() {
+            config.controlServer = controlServerInput.value.trim();
+            config.streamServer = streamUrlInput.value.trim();
+            localStorage.setItem('controlServer', config.controlServer);
+            localStorage.setItem('streamServer', config.streamServer);
+            toggleConfig();
+            checkControlServerHealth();
+        }
+
+        function checkControlServerHealth() {
+            const controlUrl = `http://${config.controlServer}/health`;
+            fetch(controlUrl, { method: 'GET' })
+                .then(r => r.json())
+                .then(data => {
+                    config.controlConnected = true;
+                })
+                .catch(() => {
+                    config.controlConnected = false;
+                    updateStreamStatus('⚠ Control server not reachable', '#ff9800', false);
                 });
+        }
+
+        function connectStream() {
+            console.log('Connect button clicked');
+            console.log('Control Server:', config.controlServer);
+            console.log('Stream Server:', config.streamServer);
+
+            connectBtn.disabled = true;
+            connectBtn.classList.add('btn-disabled');
+            updateStreamStatus('🔄 Starting stream...', '#ff9800', false);
+
+            // Call control server to start streaming
+            const controlUrl = `http://${config.controlServer}/api/stream/start`;
+            console.log('Calling:', controlUrl);
+
+            fetch(controlUrl, {
+                method: 'POST',
+                mode: 'cors',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(r => {
+                console.log('Response status:', r.status);
+                return r.json();
+            })
+            .then(data => {
+                console.log('Response data:', data);
+                if (data.status === 'started' || data.status === 'already_running') {
+                    setTimeout(() => {
+                        const streamUrl = `http://${config.streamServer}/stream.mjpg`;
+                        console.log('Loading stream from:', streamUrl);
+                        initializeStream(streamUrl);
+                        config.streamConnected = true;
+                        connectBtn.disabled = true;
+                        connectBtn.classList.add('btn-disabled');
+                        disconnectBtn.disabled = false;
+                        disconnectBtn.classList.remove('btn-disabled');
+                        updateStreamStatus('✓ Stream active', '#4caf50', true);
+                    }, 1500);
+                } else {
+                    connectBtn.disabled = false;
+                    connectBtn.classList.remove('btn-disabled');
+                    updateStreamStatus('✗ Failed: ' + data.message, '#f44336', false);
+                    console.error('Stream start failed:', data);
+                }
+            })
+            .catch(e => {
+                console.error('Connection error:', e);
+                connectBtn.disabled = false;
+                connectBtn.classList.remove('btn-disabled');
+                updateStreamStatus('✗ Connection error - check console', '#f44336', false);
+            });
+        }
+
+        function disconnectStream() {
+            disconnectBtn.disabled = true;
+            disconnectBtn.classList.add('btn-disabled');
+            updateStreamStatus('🔄 Stopping stream...', '#ff9800', false);
+
+            const controlUrl = `http://${config.controlServer}/api/stream/stop`;
+            fetch(controlUrl, { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    config.streamConnected = false;
+                    connectBtn.disabled = false;
+                    connectBtn.classList.remove('btn-disabled');
+                    disconnectBtn.disabled = true;
+                    disconnectBtn.classList.add('btn-disabled');
+                    updateStreamStatus('Status: Disconnected', '#f44336', false);
+                    document.getElementById('streamContainer').innerHTML =
+                        '<img src="data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 400 300\'%3E%3Crect fill=\'%23333\' width=\'400\' height=\'300\'/%3E%3Ctext x=\'50%25\' y=\'50%25\' text-anchor=\'middle\' dy=\'.3em\' fill=\'%23888\' font-size=\'18\'%3ECamera Stream%3C/text%3E%3Ctext x=\'50%25\' y=\'55%25\' text-anchor=\'middle\' dy=\'.3em\' fill=\'%23666\' font-size=\'12\'%3E(Click Connect to start)%3C/text%3E%3C/svg%3E" alt="Camera Stream">';
+                })
+                .catch(e => {
+                    updateStreamStatus('✗ Disconnect failed', '#f44336', false);
+                });
+        }
+
+        function updateStreamStatus(text, color, connected) {
+            streamStatus.textContent = text;
+            streamStatus.style.color = color;
+            statusDot.className = 'status-dot';
+            if (connected) {
+                statusDot.classList.add('running');
+            } else if (text.includes('Starting') || text.includes('Stopping')) {
+                statusDot.classList.add('connecting');
+            } else {
+                statusDot.classList.add('stopped');
             }
         }
 
-        function testStreamConnection(url, callback) {
-            const img = new Image();
-            const timeout = setTimeout(() => callback(false), 2000);
+        function initializeStream(streamUrl) {
+            const streamContainer = document.getElementById('streamContainer');
+            state.streamUrl = streamUrl;
 
-            img.onload = () => {
-                clearTimeout(timeout);
-                callback(true);
+            const imgElement = document.createElement('img');
+            imgElement.src = streamUrl;
+            imgElement.style.width = '100%';
+            imgElement.style.height = '100%';
+            imgElement.style.objectFit = 'contain';
+
+            imgElement.onerror = () => {
+                updateStreamStatus('✗ Stream connection failed', '#f44336', false);
             };
 
-            img.onerror = () => {
-                clearTimeout(timeout);
-                callback(false);
+            imgElement.onload = () => {
+                updateStreamStatus('✓ Stream active', '#4caf50', true);
             };
 
-            img.src = url + '?t=' + Date.now();
-        }
-
-        function toggleConfig() {
-            const panel = document.getElementById('configPanel');
-            panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
-        }
-
-        function applyStreamConfig() {
-            const input = document.getElementById('streamUrlInput').value.trim();
-            if (!input) return;
-
-            const streamUrl = input.startsWith('http') ? input : `http://${input}/stream.mjpg`;
-            initializeStream(streamUrl);
-            toggleConfig();
+            streamContainer.innerHTML = '';
+            streamContainer.appendChild(imgElement);
         }
 
         // Keyboard event listeners
@@ -505,59 +784,6 @@
                 console.log(`[${new Date().toLocaleTimeString()}] ${actions[key]}`);
             }
         }
-
-        // Stream Configuration
-        function initializeStream(streamUrl) {
-            const streamContainer = document.getElementById('streamContainer');
-            const streamStatus = document.getElementById('streamStatus');
-
-            state.streamUrl = streamUrl;
-            streamStatus.textContent = 'Status: Connecting...';
-
-            const imgElement = document.createElement('img');
-            imgElement.src = streamUrl;
-            imgElement.style.width = '100%';
-            imgElement.style.height = '100%';
-            imgElement.style.objectFit = 'contain';
-
-            imgElement.onerror = () => {
-                streamStatus.textContent = '✗ Stream connection failed - check server is running';
-                streamStatus.style.color = '#ff6b6b';
-            };
-
-            imgElement.onload = () => {
-                streamStatus.textContent = '✓ Stream active - ' + streamUrl.split('/stream')[0];
-                streamStatus.style.color = '#4caf50';
-            };
-
-            streamContainer.innerHTML = '';
-            streamContainer.appendChild(imgElement);
-        }
-
-        // Initialize on load
-        window.addEventListener('load', () => {
-            updateModeDisplay();
-
-            // Check if stream URL is in URL params
-            const params = new URLSearchParams(window.location.search);
-            const streamParam = params.get('stream');
-
-            if (streamParam) {
-                const streamUrl = streamParam.startsWith('http') ? streamParam : `http://${streamParam}/stream.mjpg`;
-                initializeStream(streamUrl);
-                document.getElementById('streamUrlInput').value = streamParam;
-            } else {
-                // Try to auto-detect
-                autoDetectStream();
-            }
-        });
-
-        // Refresh stream periodically if connection is lost
-        setInterval(() => {
-            if (state.keysDown.size > 0) {
-                const pressedKeys = Array.from(state.keysDown).join(', ').toUpperCase();
-            }
-        }, 100);
     </script>
 </body>
 </html>
