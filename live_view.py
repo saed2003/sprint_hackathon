@@ -10,8 +10,8 @@ import sys
 import time
 import cv2
 
-W, H, FPS = 640, 480, 30
-CAM_INDEX = 0          # /dev/video0 ; bump if wrong device
+W, H, FPS = 1280, 720, 30   # 16:9 ; cam supports MJPG 1280x720@30
+CAM_INDEX = 0               # /dev/video0 ; bump if wrong device
 
 
 def open_cam(index):
