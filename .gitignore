@@ -5,13 +5,7 @@ __pycache__/
 *.pyc
 
 # Captured camera data (large, machine-specific — recreated at runtime)
-captures/
-test_capture/
 
-# Generated point clouds / previews
-*.ply
-*.pcd
-merged_views.png
 
 # OS / editor
 .DS_Store
