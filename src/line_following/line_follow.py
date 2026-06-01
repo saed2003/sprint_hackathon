@@ -21,8 +21,8 @@ import time
 # project root = the folder that contains line_following/, camera/, pointcloud/, rasbot/, ...
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from rasbot.api import RasBot, Color
-from camera.rs_capture import StereoCapture
-from pointcloud import scan360
+from src.camera.rs_capture import StereoCapture
+from src.pointcloud import scan360
 
 # ── tunables (ALL need tuning on the real floor/tape) ───────────────────────────
 BASE_SPEED      = 80     # forward speed while the line is centered

@@ -37,7 +37,7 @@ import cv2
 
 # project root = the folder that contains pointcloud/, camera/, rasbot/, ...
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from camera.rs_capture import StereoCapture, default_out_root
+from src.camera.rs_capture import StereoCapture, default_out_root
 
 # ── scan tunables ───────────────────────────────────────────────────────────────
 SCAN_SHOTS        = 9        # views per full turn (8-10): 9->40deg, 10->36deg, 8->45deg
