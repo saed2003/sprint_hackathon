@@ -36,7 +36,7 @@ from camera.rs_capture import StereoCapture
 from pointcloud import scan360
 
 # ── tunables ──────────────────────────────────────────────────────────────────
-BASE_SPEED       = 50    # straight-ahead speed (0–255)
+BASE_SPEED       = 60    # straight-ahead speed (0–255)
 TURN_SPEED       = 20    # how much to reduce the slow side for gentle correction
 HARD_TURN_SPEED  = 35    # how much to reduce the slow side for sharp correction
 SEARCH_SPEED     = 25    # spin speed during line-lost recovery (slow = don't overshoot)
@@ -45,11 +45,12 @@ LOOP_PAUSE       = 1.0 / LOOP_HZ
 
 # "Line lost" debounce: only enter recovery after this many consecutive
 # all_off reads. Prevents a brief sensor gap from triggering a full spin.
-MISS_THRESHOLD   = 12    # ~240 ms at 50 Hz — enough to bridge small tape gaps
+# 25 reads ≈ 500 ms — very tolerant of gaps and bumps.
+MISS_THRESHOLD   = 25
 
 # After re-acquiring the line in recovery, stop and settle this long
 # before resuming forward motion (prevents overshoot re-triggering recovery).
-RECOVER_SETTLE_S = 0.2
+RECOVER_SETTLE_S = 0.25
 
 # After a scan, ignore stop-marker triggers for this many seconds.
 STOP_DEBOUNCE_S  = 1.5
@@ -58,7 +59,10 @@ STOP_DEBOUNCE_S  = 1.5
 CLEAR_MARKER_S   = 0.35
 
 # How long to spin searching for a lost line before giving up.
-SEARCH_TIMEOUT_S = 3.0
+SEARCH_TIMEOUT_S = 5.0
+
+# Print live sensor state to the terminal every N loop ticks (0 = off).
+DEBUG_EVERY      = 10    # print every 200 ms — set 0 to silence
 
 # Set True to skip the 360° scan — use this while tuning steering.
 SKIP_SCAN        = True
@@ -185,11 +189,19 @@ def run(bot, cam, log=print):
 
     last_error     = 0
     debounce_until = 0.0
-    miss_count     = 0      # consecutive all_off reads
+    miss_count     = 0
+    tick           = 0
 
     while True:
         lo, li, ri, ro, error, all_on, all_off = read_sensors(bot)
         now = time.time()
+
+        # ── live debug output ─────────────────────────────────────────────────
+        if DEBUG_EVERY and tick % DEBUG_EVERY == 0:
+            state = "STOP" if all_on else ("MISS×" + str(miss_count) if all_off else "ok")
+            print(f"lo={int(lo)} li={int(li)} ri={int(ri)} ro={int(ro)}"
+                  f"  err={error:+d}  {state}    ", end="\r")
+        tick += 1
 
         # ── stop marker ───────────────────────────────────────────────────────
         if all_on and now >= debounce_until:
