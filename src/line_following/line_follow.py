@@ -50,10 +50,10 @@ LOOP_HZ      = 50
 LOOP_PAUSE   = 1.0 / LOOP_HZ
 
 # Recovery — what happens when sensors all go dark
-MISS_CREEP_TICKS = 8     # ticks at creep speed before full stop (~160 ms)
+MISS_CREEP_TICKS = 6     # ticks at creep speed before full stop (~120 ms)
 MISS_CREEP_SPEED = 20    # very slow forward creep during brief gap
 SEARCH_SPEED     = 20    # slow spin during recovery (avoids overshoot)
-SEARCH_TIMEOUT_S = 4.0   # give up after this long and stay stopped
+SEARCH_TIMEOUT_S = 1.5   # give up quickly and stay stopped (tape ended)
 RECOVER_SETTLE_S = 0.15  # pause after re-acquiring before moving
 
 # Stop-marker behaviour
@@ -269,12 +269,13 @@ def run(bot, cam=None, log=_log):
             log(f"Camera detector failed ({e}) — using IR fallback.")
 
     bot.set_all_leds_color(Color.GREEN)
-    pid            = PID(KP, KI, KD)
-    last_error     = 0.0
-    debounce_until = 0.0
-    miss_count     = 0
-    in_recovery    = False
-    tick           = 0
+    pid              = PID(KP, KI, KD)
+    last_error       = 0.0
+    debounce_until   = 0.0
+    miss_count       = 0
+    in_recovery      = False
+    tick             = 0
+    just_scanned     = False   # True right after a stop-marker scan
 
     try:
         while True:
@@ -306,8 +307,9 @@ def run(bot, cam=None, log=_log):
             if stop_triggered:
                 bot.stop()
                 pid.reset()
-                miss_count  = 0
-                in_recovery = False
+                miss_count   = 0
+                in_recovery  = False
+                just_scanned = True
                 do_scan(bot, cam, log)
                 bot.forward(BASE_SPEED)
                 time.sleep(CLEAR_MARKER_S)
@@ -333,6 +335,13 @@ def run(bot, cam=None, log=_log):
                 if not in_recovery:
                     in_recovery = True
                     bot.stop()
+                    # If tape ends right after a scan = end of path → stop cleanly
+                    if just_scanned:
+                        log("tape ended after scan — end of path. Stopping.")
+                        bot.beep(0.3)
+                        bot.set_all_leds_color(Color.RED)
+                        break
+                    just_scanned = False
                     if not recover_line(bot, pid, last_error, log):
                         break
                     miss_count  = 0
@@ -343,9 +352,10 @@ def run(bot, cam=None, log=_log):
                 continue
 
             # ── normal tracking ────────────────────────────────────────────────
-            miss_count  = 0
-            in_recovery = False
-            last_error  = error
+            miss_count   = 0
+            in_recovery  = False
+            just_scanned = False
+            last_error   = error
             correction  = pid.compute(error)
             apply_correction(bot, correction)
             time.sleep(LOOP_PAUSE)
