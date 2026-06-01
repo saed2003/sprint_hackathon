@@ -138,6 +138,18 @@ class Viewer:
             self.dist = float(np.clip(self.dist, self.span * 0.2, self.span * 20))
 
 
+def save_view(ply, out_png, w=960, h=720, yaw=0.6, pitch=0.3):
+    """Render the cloud to a PNG from a fixed 3/4 viewpoint — NO window, fully headless.
+    Lets you see a scan result as an image even with no display or a broken GUI."""
+    pts, cols = read_ply(ply)
+    if len(pts) == 0:
+        return None
+    vw = Viewer(pts, cols, w, h)
+    vw.yaw, vw.pitch = yaw, pitch
+    cv2.imwrite(out_png, vw.render())
+    return out_png
+
+
 def view(ply, w=960, h=720):
     pts, cols = read_ply(ply)
     if len(pts) == 0:
@@ -145,8 +157,20 @@ def view(ply, w=960, h=720):
         return
     vw = Viewer(pts, cols, w, h)
     win = f"3D point cloud — {os.path.basename(ply)}"
-    cv2.namedWindow(win, cv2.WINDOW_AUTOSIZE)
-    cv2.setMouseCallback(win, vw.on_mouse)
+    try:
+        cv2.namedWindow(win, cv2.WINDOW_AUTOSIZE)
+        cv2.imshow(win, vw.render())          # realize the window BEFORE attaching the callback
+        cv2.waitKey(1)
+        try:
+            cv2.setMouseCallback(win, vw.on_mouse)
+        except cv2.error:
+            print("(mouse orbit unavailable on this OpenCV/GUI build — use the arrow keys)")
+    except cv2.error as e:
+        # no usable GUI (e.g. launched without a real display) -> save a still instead
+        out = os.path.splitext(ply)[0] + "_preview.png"
+        cv2.imwrite(out, vw.render())
+        print(f"no interactive window available ({e}).\nsaved a still preview -> {out}")
+        return
     print(f"showing {len(pts):,} points from {ply}")
     while True:
         cv2.imshow(win, vw.render())
