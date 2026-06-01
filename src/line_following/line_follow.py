@@ -39,9 +39,10 @@ MAX_SPEED    = 255
 MIN_SPEED    = 5     # keep wheels slightly spinning even during sharp turns
 
 # PID gains
-KP           = 20.0  # proportional — lowered to reduce oscillation/wobble
-KD           = 0.5   # derivative   — keep small for binary sensors
-KI           = 0.0   # integral     — leave 0
+KP_SMALL     = 18.0  # gain for small errors (|err|<=1) — smooth centre tracking
+KP_LARGE     = 55.0  # gain for large errors (|err|>=3) — sharp turns need more force
+KD           = 0.5   # derivative — keep small for binary sensors
+KI           = 0.0   # integral   — leave 0
 MAX_INTEGRAL = 20.0
 
 LOOP_HZ      = 50
@@ -119,7 +120,11 @@ class PID:
         self._last_t   = None
 
     def compute(self, error):
-        """Return the correction value for the given error."""
+        """Return the correction value for the given error.
+
+        Uses KP_LARGE for |error|>=3 (sharp turns) and KP_SMALL otherwise,
+        so gentle tracking stays smooth while sharp turns get caught fast.
+        """
         now = time.time()
         dt  = (now - self._last_t) if self._last_t else LOOP_PAUSE
         dt  = max(dt, 0.001)
@@ -130,7 +135,8 @@ class PID:
         derivative = (error - self._last_err) / dt
         self._last_err = error
 
-        return self.kp * error + self.ki * self._integral + self.kd * derivative
+        kp = KP_LARGE if abs(error) >= 3 else self.kp
+        return kp * error + self.ki * self._integral + self.kd * derivative
 
 
 # ── motor application ─────────────────────────────────────────────────────────
@@ -255,7 +261,7 @@ def do_scan(bot, cam, log):
 
 def run(bot, cam=None, log=_log):
     log("Line-following started (PID). Ctrl-C to stop.")
-    log(f"BASE={BASE_SPEED}  KP={KP}  KD={KD}  KI={KI}  SKIP_SCAN={SKIP_SCAN}")
+    log(f"BASE={BASE_SPEED}  KP_S={KP_SMALL}  KP_L={KP_LARGE}  KD={KD}  SKIP_SCAN={SKIP_SCAN}")
 
     red_detector = None
     if not SKIP_SCAN:
@@ -266,7 +272,7 @@ def run(bot, cam=None, log=_log):
             log(f"Camera detector failed ({e}) — using IR fallback.")
 
     bot.set_all_leds_color(Color.GREEN)
-    pid              = PID(KP, KI, KD)
+    pid              = PID(KP_SMALL, KI, KD)
     last_error       = 0.0
     debounce_until   = 0.0
     miss_count       = 0
@@ -284,7 +290,8 @@ def run(bot, cam=None, log=_log):
             # ── debug (P-only estimate — does NOT advance PID state) ───────────
             if DEBUG_EVERY and tick % DEBUG_EVERY == 0:
                 if error is not None:
-                    p_est = KP * error          # show P term only for display
+                    kp = KP_LARGE if abs(error) >= 3 else KP_SMALL
+                    p_est = kp * error
                     state = (f"err={error:+.0f}  "
                              f"dist={dist:+.1f}cm  "
                              f"P≈{p_est:+.0f}")
@@ -323,7 +330,7 @@ def run(bot, cam=None, log=_log):
 
                 if miss_count <= MISS_CREEP_TICKS:
                     # Phase 1: creep with last PID correction — keeps turning
-                    last_corr = KP * last_error   # P-only for creep
+                    last_corr = KP_SMALL * last_error   # P-only for creep
                     apply_correction(bot, last_corr * (MISS_CREEP_SPEED / BASE_SPEED))
                     time.sleep(LOOP_PAUSE)
                     continue
