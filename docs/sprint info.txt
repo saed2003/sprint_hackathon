@@ -10,3 +10,7 @@ pi:
 hostname: sprint
 username: sprint
 password: group9
+
+
+ip address:
+192.168.137.74
