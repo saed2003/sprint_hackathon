@@ -26,7 +26,7 @@ Calibrate: python3 src/line_following/line_follow.py --calibrate
 ─────────────────────────────────────────────────────────────────────────────
 """
 
-import os, sys, time, threading
+import os, sys, time, threading, random
 import numpy as np
 import cv2
 
@@ -58,6 +58,12 @@ RECOVER_SETTLE_S = 0.2   # pause after re-acquiring before moving
 # Stop-marker behaviour
 STOP_DEBOUNCE_S  = 2.0   # ignore re-triggers after a scan for this long
 CLEAR_MARKER_S   = 0.4   # drive forward after scan to clear the cross-mark
+
+# T-junction: all 4 sensors on black = intersection.
+# Robot stops, randomly picks left or right, spins until an inner sensor
+# finds the branch tape, then hands back to PID.
+JUNCTION_SPIN_SPEED   = 20    # slow spin so it doesn't overshoot the branch
+JUNCTION_TIMEOUT_S    = 2.0   # max spin time per direction before trying the other
 
 # Red tape camera detection (SKIP_SCAN=False mode)
 RED_PIXEL_THRESHOLD = 3000
@@ -241,6 +247,43 @@ def recover_line(bot, pid, last_error, log):
     return False
 
 
+# ── T-junction navigation ─────────────────────────────────────────────────────
+
+def navigate_junction(bot, pid, log):
+    """Stop at a T-junction, randomly pick left or right, spin until an inner
+    sensor finds the branch, then return so PID can re-acquire the line.
+    Tries the other direction if the first times out.
+    Returns True if a branch was found, False if both directions failed.
+    """
+    bot.stop()
+    time.sleep(0.1)
+    bot.set_all_leds_color(Color.YELLOW)
+
+    directions = [(bot.rotate_left, "left"), (bot.rotate_right, "right")]
+    random.shuffle(directions)
+
+    for spin_fn, label in directions:
+        log(f"junction → trying {label}")
+        deadline = time.time() + JUNCTION_TIMEOUT_S
+        while time.time() < deadline:
+            _, li, ri, _, _, _ = read_sensors(bot)
+            if li or ri:             # inner sensor on branch = aligned
+                bot.stop()
+                time.sleep(0.1)
+                pid.reset()
+                log(f"junction → branch found ({label})")
+                bot.set_all_leds_color(Color.GREEN)
+                return True
+            spin_fn(JUNCTION_SPIN_SPEED)
+            time.sleep(LOOP_PAUSE)
+        bot.stop()
+        time.sleep(0.15)
+
+    log("junction → no branch found")
+    bot.set_all_leds_color(Color.RED)
+    return False
+
+
 # ── stop-marker scan ──────────────────────────────────────────────────────────
 
 def do_scan(bot, cam, log):
@@ -250,14 +293,18 @@ def do_scan(bot, cam, log):
         log("stop marker — waiting 1 s (SKIP_SCAN=True)")
         time.sleep(1.0)
         return
+    if cam is None:
+        log("scan error: no camera — set SKIP_SCAN=False and pass a StereoCapture")
+        return
     log("stop marker → 360° scan")
+    import traceback
+    from pointcloud import scan360
     try:
-        from pointcloud import scan360
-        _, ply = scan360.scan_and_build(bot, cam, log=log)
-        log(f"scan complete → {ply}")
+        session, ply = scan360.scan_and_build(bot, cam, log=log)
+        log(f"scan complete: session={os.path.basename(session)}  cloud={ply}")
         bot.beep(0.15)
-    except Exception as e:
-        log(f"scan error: {e}")
+    except Exception:
+        log(f"scan error (continuing):\n{traceback.format_exc()}")
 
 
 # ── main loop ─────────────────────────────────────────────────────────────────
@@ -304,12 +351,20 @@ def run(bot, cam=None, log=_log):
                       f"  {state}          ", end="\r")
             tick += 1
 
-            # ── stop marker ────────────────────────────────────────────────────
-            use_cam = red_detector is not None
+            # ── T-junction: all 4 on black = intersection ─────────────────────
+            if all_on:
+                if not navigate_junction(bot, pid, log):
+                    break   # couldn't find any branch — give up
+                last_error = 0.0
+                miss_count = 0
+                continue
+
+            # ── stop marker: red tape detected by camera only ──────────────────
             stop_triggered = (
-                (use_cam  and red_detector.check()) or
-                (not use_cam and all_on)
-            ) and now >= debounce_until
+                red_detector is not None
+                and red_detector.check()
+                and now >= debounce_until
+            )
 
             if stop_triggered:
                 bot.stop()
