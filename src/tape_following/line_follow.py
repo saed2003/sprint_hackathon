@@ -72,10 +72,12 @@ from setup_and_api.api import RasBot, Color
 BASE_SPEED          = 40    # cruise speed on centred / straight tape
 MIN_SPEED           = 15    # floor — below this motors stall / skip
 MAX_SPEED           = 255
-TIGHT_TURN_SPEED    = 15    # in-place pivot speed for sharp corners
+TIGHT_TURN_SPEED    = 18    # in-place pivot speed — raised from 15 (was too slow to exit turns)
 
 # Ramp rate: max speed-units change per loop tick.
 # At 50 Hz, RAMP_RATE=4 → 0→40 in 10 ticks (200 ms).
+# NOTE: ramp is bypassed when correction is saturated (|corr|=MAX_CORRECTION)
+# so sharp corners get immediate full-speed response.
 RAMP_RATE           = 4
 
 # ── PID gains ─────────────────────────────────────────────────────────────────
@@ -93,13 +95,13 @@ CORRECTION_SCALE    = 0.30  # cruise-speed reduction per unit of |correction|
 HISTORY_SIZE        = 10    # rolling buffer length  (= 200 ms at 50 Hz)
 DERIV_WINDOW        = 4     # ticks for smoothed derivative  (= 80 ms)
 TREND_THRESHOLD     = 1.0   # |trend| above this → curve-entry penalty fires
-SPEED_PENALTY_MAX   = 8     # max extra speed reduction from prediction
+SPEED_PENALTY_MAX   = 10    # max extra speed reduction from prediction
 SPEED_PENALTY_K     = 5.0   # penalty = min(MAX, (|trend| - threshold) × K)
+# weighted_trend() is also used: recent readings count more → faster penalty
+WEIGHTED_TREND_SCALE = 0.7  # weighted_trend contribution to speed_penalty
 
 # SHARP_CORNER_TREND: |trend| above this  AND  |error| ≥ 3  → use pivot.
-# Lower value = more corners trigger pivot (safer for sharp tracks).
-# Higher value = only very sudden corners trigger pivot (safer for smooth tracks).
-SHARP_CORNER_TREND  = 1.5
+SHARP_CORNER_TREND  = 1.0   # uses max(trend, weighted_trend*0.8) for earlier detection
 
 # ── loop timing ───────────────────────────────────────────────────────────────
 LOOP_HZ             = 50
@@ -110,7 +112,7 @@ DEBUG               = True  # False = silent
 DEBUG_EVERY         = 5     # print every N ticks to keep terminal readable
 
 # ── MISS / recovery ───────────────────────────────────────────────────────────
-MISS_CREEP_TICKS    = 15    # ticks of slow creep before spin-search (~300 ms)
+MISS_CREEP_TICKS    = 20    # ticks of slow creep before spin-search (~400 ms)
 MISS_CREEP_SPEED    = 18
 SEARCH_SPEED        = 18    # spin speed during recovery
 SEARCH_TIMEOUT_S    = 4.0   # total recovery time (split evenly per direction)
@@ -313,23 +315,31 @@ class PredictionEngine:
     def speed_penalty(self) -> float:
         """How much to subtract from BASE_SPEED when entering a curve.
 
-        Fires when |trend| > TREND_THRESHOLD, scaling linearly above that.
-        Example: trend=1.8, threshold=1.0, K=5 → penalty = min(8, 4.0) = 4.0
-        The robot slows BEFORE reaching peak error — not after.
+        Uses the MAXIMUM of plain trend and weighted trend so that:
+        - weighted_trend() reacts faster (recent readings weighted higher)
+          → penalty fires earlier, robot slows before reaching peak error
+        - plain trend() provides a stable sustained signal on long curves
         """
-        t = abs(self.trend())
-        if t <= TREND_THRESHOLD:
+        t  = abs(self.trend())
+        wt = abs(self.weighted_trend()) * (1.0 / WEIGHTED_TREND_SCALE) \
+             if WEIGHTED_TREND_SCALE > 0 else 0.0
+        effective = max(t, wt * WEIGHTED_TREND_SCALE)
+        if effective <= TREND_THRESHOLD:
             return 0.0
-        return min(SPEED_PENALTY_MAX, (t - TREND_THRESHOLD) * SPEED_PENALTY_K)
+        return min(SPEED_PENALTY_MAX, (effective - TREND_THRESHOLD) * SPEED_PENALTY_K)
 
     def is_sharp_corner(self, error: float) -> bool:
-        """Detect a sudden 90° corner (as opposed to a gradual curve).
+        """Detect a sudden 90° corner vs a gradual curve.
 
-        A sharp corner shows up as a large, fast jump in trend combined
-        with |error| ≥ 3. Gradual curves ramp up slowly so their trend
-        stays below SHARP_CORNER_TREND even at the same error magnitude.
+        Uses max(trend, weighted_trend * 0.8) so the weighted signal
+        (which reacts faster to new data) can trigger pivot earlier —
+        catching corners before the plain trend crosses the threshold.
         """
-        return abs(error) >= 3 and abs(self.trend()) > SHARP_CORNER_TREND
+        if abs(error) < 3:
+            return False
+        t  = abs(self.trend())
+        wt = abs(self.weighted_trend()) * 0.8   # weighted fires ~1 tick earlier
+        return max(t, wt) > SHARP_CORNER_TREND
 
     def reset(self) -> None:
         self._buf = deque([0.0] * HISTORY_SIZE, maxlen=HISTORY_SIZE)
@@ -389,7 +399,11 @@ class MotorController:
             BASE_SPEED - abs(c) * CORRECTION_SCALE - speed_penalty,
             MIN_SPEED + 5, MAX_SPEED,
         )
-        return self.apply(bot, float(cruise + c), float(cruise - c))
+        # Bypass ramp when correction is fully saturated (|c| == MAX_CORRECTION).
+        # The ramp would delay the first tick of a sharp corner correction from
+        # 55:15 down to ~44:36 — not enough steering authority to catch the turn.
+        saturated = abs(c) >= MAX_CORRECTION
+        return self.apply(bot, float(cruise + c), float(cruise - c), ramp=not saturated)
 
     def pivot(self, bot, direction: int) -> Tuple[int, int]:
         """In-place rotation (bypasses ramp for instant response).
@@ -528,6 +542,11 @@ class LineFollower:
         tick:           int   = 0
         last_L:         int   = BASE_SPEED
         last_R:         int   = BASE_SPEED
+        # Corner latch: once pivot fires, hold it for at least this many
+        # more ticks so the robot actually completes the turn.
+        # Cleared early if |error| drops below 2 (robot is back near centre).
+        _pivot_latch:   int   = 0
+        _latch_dir:     int   = 0    # +1 = right, -1 = left
 
         try:
             while True:
@@ -628,22 +647,44 @@ class LineFollower:
                 corr_clamped = max(-MAX_CORRECTION, min(MAX_CORRECTION, correction))
 
                 # ── pivot decision ────────────────────────────────────────
-                # Always pivot for single-outer states (1000 / 0001):
-                #   robot is at the tape edge, forward motion overshoots.
-                # Also pivot for any |err|≥3 state when trend is STEEP:
-                #   steep trend = sudden 90° corner, not a gradual curve.
-                #   Gradual curves (low trend) still use differential drive.
+                # Single-outer (1000/0001): always pivot.
+                # Sharp corner (|err|≥3 AND steep trend): pivot + start latch.
+                # Latch active: keep pivoting in the same direction for
+                #   CORNER_LATCH_TICKS ticks so the robot actually finishes
+                #   the turn (trend drops to 0 after 1 tick, without latch
+                #   the robot exits pivot too early → MISS).
+                # Latch cleared early if |error| drops below 2 (near centre).
+                CORNER_LATCH_TICKS = 4
+
                 _single_outer = ((r.lo and not r.li and not r.ri and not r.ro) or
                                  (r.ro and not r.lo and not r.li and not r.ri))
                 _sharp_corner = self.pred.is_sharp_corner(r.error)
-                use_pivot     = _single_outer or _sharp_corner
+
+                # Clear latch once robot is close to centre
+                if abs(r.error) < 2:
+                    _pivot_latch = 0
 
                 direction = 1 if corr_clamped > 0 else -1
+
+                if _single_outer or _sharp_corner:
+                    # New or continuing corner — set/refresh latch
+                    _pivot_latch = CORNER_LATCH_TICKS
+                    _latch_dir   = direction
+                    use_pivot    = True
+                elif _pivot_latch > 0:
+                    # Latch holding: keep pivoting in the original direction
+                    _pivot_latch -= 1
+                    direction     = _latch_dir
+                    use_pivot     = True
+                else:
+                    use_pivot = False
 
                 if use_pivot:
                     last_L, last_R = self.motors.pivot(bot, direction)
                     if _sharp_corner and not _single_outer:
                         state = f"CORNER-PIVOT-{'R' if direction > 0 else 'L'}"
+                    elif _pivot_latch > 0 and not _single_outer and not _sharp_corner:
+                        state = f"LATCH-{'R' if direction > 0 else 'L'}({_pivot_latch})"
                     else:
                         state = f"PIVOT-{'R' if direction > 0 else 'L'}"
                 else:
@@ -686,13 +727,37 @@ class LineFollower:
     def _recover(self, bot, last_error: float, log) -> bool:
         """Spin-search for tape. Returns True if tape is re-acquired.
 
-        Tries the last-known direction first (bias from last_error sign),
-        then the opposite direction if the first half times out.
+        Phase 0 (U-turn mode): when last_error ≈ 0 the robot was centred
+          when tape disappeared — likely a U-turn or tight end-cap.
+          Try a short pivot left then right (0.4s each) before full search.
+          This catches U-turns that a straight creep completely misses.
+
+        Phase 1/2: standard spin-search in last-known direction then opposite.
         """
         log("Line lost — searching...")
         bot.set_all_leds_color(Color.YELLOW)
 
-        start_left = (last_error <= 0)  # last drifted left → search left first
+        # ── Phase 0: U-turn quick-probe ───────────────────────────────────
+        if abs(last_error) < 1.0:
+            log("MISS from centre — probing for U-turn...")
+            for probe_left in [True, False]:
+                if probe_left:
+                    bot.rotate_left(SEARCH_SPEED)
+                else:
+                    bot.rotate_right(SEARCH_SPEED)
+                time.sleep(0.5)
+                bot.stop(); time.sleep(0.05)
+                r = self.sensors.read(bot)
+                if r.li or r.ri:
+                    bot.forward(MISS_CREEP_SPEED); time.sleep(0.2)
+                    self.motors.stop(bot); time.sleep(RECOVER_SETTLE_S)
+                    self.pid.reset(); self.pred.reset()
+                    log("U-turn found")
+                    bot.set_all_leds_color(Color.GREEN)
+                    return True
+
+        # ── Phase 1/2: full spin search in both directions ────────────────
+        start_left = (last_error <= 0)
         half       = SEARCH_TIMEOUT_S / 2.0
 
         for spin_left in [start_left, not start_left]:
@@ -702,7 +767,6 @@ class LineFollower:
             while time.time() < deadline:
                 r = self.sensors.read(bot)
                 if r.li or r.ri:
-                    # Inner sensor found tape — creep forward to centre on it
                     self.motors.stop(bot);  time.sleep(0.1)
                     bot.forward(MISS_CREEP_SPEED); time.sleep(0.15)
                     self.motors.stop(bot);  time.sleep(RECOVER_SETTLE_S)
@@ -753,8 +817,10 @@ class LineFollower:
                 r = self.sensors.read(bot)
                 if r.li or r.ri:
                     self.motors.stop(bot); time.sleep(0.1)
-                    bot.forward(MISS_CREEP_SPEED); time.sleep(0.2)
-                    self.motors.stop(bot); time.sleep(0.1)
+                    # Drive forward at full speed to get well clear of the
+                    # junction marker — 0.2s left the robot on top of it
+                    bot.forward(BASE_SPEED); time.sleep(0.5)
+                    self.motors.stop(bot); time.sleep(0.15)
                     self.pid.reset(); self.pred.reset()
                     log(f"Junction → branch found ({label})")
                     bot.set_all_leds_color(Color.GREEN)
