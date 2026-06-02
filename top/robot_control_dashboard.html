@@ -235,6 +235,13 @@
             font-size: 16px;
         }
 
+        .key.servo {
+            background: #455a64;
+            border-color: #37474f;
+            color: #b0bec5;
+            font-size: 14px;
+        }
+
         .key.speed-display {
             background: #1a1a1a;
             border-color: #555;
@@ -541,10 +548,24 @@
                         <div class="key speed" onclick="changeSpeed(20)">+<br><span style="font-size: 9px;">Faster</span></div>
                     </div>
 
+                    <!-- Camera servo (pan / tilt) -->
+                    <div class="key-row" style="margin-top: 5px;">
+                        <div class="key servo" onclick="nudgeServo('pan', -10)">◀<br><span style="font-size: 9px;">Pan L</span></div>
+                        <div class="key servo" onclick="nudgeServo('tilt', 10)">▲<br><span style="font-size: 9px;">Tilt Up</span></div>
+                        <div class="key servo" onclick="nudgeServo('tilt', -10)">▼<br><span style="font-size: 9px;">Tilt Dn</span></div>
+                        <div class="key servo" onclick="nudgeServo('pan', 10)">▶<br><span style="font-size: 9px;">Pan R</span></div>
+                    </div>
+
                     <!-- Capture -->
                     <div class="key-row" style="margin-top: 5px;">
                         <div class="key action" data-key="r" onclick="captureScan360()">R<br><span style="font-size: 9px;">360° Scan</span></div>
                         <div class="key action" data-key="v" onclick="captureSingle()">V<br><span style="font-size: 9px;">Capture</span></div>
+                    </div>
+
+                    <!-- Point cloud: build + download -->
+                    <div class="key-row" style="margin-top: 5px;">
+                        <div class="key action" data-key="t" onclick="captureBuild()">T<br><span style="font-size: 9px;">Build Cloud</span></div>
+                        <div class="key action" id="downloadKey" onclick="downloadCloud()">⬇<br><span style="font-size: 9px;">Download</span></div>
                     </div>
 
                     <!-- Mode Switch -->
@@ -574,9 +595,17 @@
                         <span class="hotkey-description">Speed Down / Up</span>
                         <span class="hotkey-key">- / +</span>
                     </div>
+                    <div class="hotkey-item">
+                        <span class="hotkey-description">Camera Pan / Tilt</span>
+                        <span class="hotkey-key">Arrows</span>
+                    </div>
                     <div class="hotkey-item action">
                         <span class="hotkey-description">360° Scan / Single Capture</span>
                         <span class="hotkey-key">R / V</span>
+                    </div>
+                    <div class="hotkey-item action">
+                        <span class="hotkey-description">Build Cloud / Download</span>
+                        <span class="hotkey-key">T / Y</span>
                     </div>
                     <div class="hotkey-item mode">
                         <span class="hotkey-description">Switch Manual/Auto</span>
@@ -895,6 +924,37 @@
             postCapture('single', 'single capture');
         }
 
+        function captureBuild() {
+            postCapture('build', 'cloud build');   // T — merge last scan into a .ply
+        }
+
+        // Y replacement: download the built point cloud to THIS device.
+        function downloadCloud() {
+            fetch(`${controlBase()}/api/cloud/status`)
+                .then(r => r.json())
+                .then(d => {
+                    if (d.has_cloud) {
+                        updateRunStatus('⬇ Downloading ' + d.name + '...', false);
+                        window.location.href = `${controlBase()}/api/cloud/download`;
+                    } else {
+                        updateRunStatus('⚠ No cloud yet — Scan (R) then Build (T)', false);
+                    }
+                })
+                .catch(() => updateRunStatus('✗ Control server not reachable', false));
+        }
+
+        // Camera pan/tilt servo nudge (arrow keys / on-screen buttons).
+        function nudgeServo(axis, delta) {
+            fetch(`${controlBase()}/api/servo`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ axis, delta })
+            })
+            .then(r => r.json())
+            .then(d => { if (d.status === 'ok') updateRunStatus(`${axis} → ${d.value}`, state.runActive); })
+            .catch(() => {});
+        }
+
         function postCapture(kind, label) {
             updateRunStatus('🔄 ' + label + ' started...', false);
             fetch(`${controlBase()}/api/capture/${kind}`, { method: 'POST' })
@@ -949,6 +1009,12 @@
             // Run on/off hotkey (mirrors the START/STOP RUN button).
             if (key === 'enter') { e.preventDefault(); toggleRun(); return; }
 
+            // Camera pan/tilt — arrow keys (taps).
+            if (key === 'arrowup')    { e.preventDefault(); nudgeServo('tilt',  10); return; }
+            if (key === 'arrowdown')  { e.preventDefault(); nudgeServo('tilt', -10); return; }
+            if (key === 'arrowleft')  { e.preventDefault(); nudgeServo('pan',  -10); return; }
+            if (key === 'arrowright') { e.preventDefault(); nudgeServo('pan',   10); return; }
+
             // Speed adjust (+/-) — tap keys, handle before the held-key guard.
             if (key === '+' || key === '=') { changeSpeed(20); return; }
             if (key === '-' || key === '_') { changeSpeed(-20); return; }
@@ -972,6 +1038,10 @@
                 captureScan360();
             } else if (key === 'v') {
                 captureSingle();
+            } else if (key === 't') {
+                captureBuild();
+            } else if (key === 'y') {
+                downloadCloud();
             } else if (MOVE_KEYS.includes(key)) {
                 sendDrive();
             }
