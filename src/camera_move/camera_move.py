@@ -13,7 +13,7 @@ Controls (tap, no Enter needed)
   Up / Down arrow      tilt camera up / down
   Left / Right arrow   pan camera left / right
   c                    re-center (back to defaults)
-  q                    quit (also ESC or Ctrl-C)
+  q                    quit (also Ctrl-C)
 
 Run on the Pi:
   python3 camera_move/camera_move.py
@@ -22,6 +22,10 @@ Run on the Pi:
 import os
 import sys
 import time
+import select
+import termios
+import tty
+import contextlib
 
 # project root = the folder that contains camera_move/, wasd/, setup_and_api/, ...
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -34,6 +38,7 @@ from setup_and_api.api.constants import (
 # ── tunables ────────────────────────────────────────────────────────────────
 TILT_STEP = 10          # degrees per Up/Down tap
 PAN_STEP  = 10          # degrees per Left/Right tap
+DEBUG     = bool(os.environ.get("CAM_DEBUG"))   # CAM_DEBUG=1 prints raw key bytes
 
 # arrow-key escape sequences
 KEY_UP    = "\x1b[A"
@@ -42,23 +47,32 @@ KEY_RIGHT = "\x1b[C"
 KEY_LEFT  = "\x1b[D"
 
 
-def _read_key() -> str:
-    """Read one keypress (handles arrow escape sequences) without Enter."""
-    import termios
-    import tty
-    import select
-
-    fd = sys.stdin.fileno()
+@contextlib.contextmanager
+def raw_mode(fd):
+    """Put the terminal in raw mode for the whole session (set once)."""
     old = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
-        ch = sys.stdin.read(1)
-        # arrow keys arrive as ESC + '[' + letter; grab the rest if present
-        if ch == "\x1b" and select.select([sys.stdin], [], [], 0.001)[0]:
-            ch += sys.stdin.read(2)
-        return ch
+        yield
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def read_key() -> str:
+    """Read one keypress, assembling arrow escape sequences if present."""
+    ch = sys.stdin.read(1)
+    if ch == "\x1b":                                   # maybe an arrow sequence
+        if select.select([sys.stdin], [], [], 0.05)[0]:
+            ch += sys.stdin.read(1)                     # '['
+            if select.select([sys.stdin], [], [], 0.05)[0]:
+                ch += sys.stdin.read(1)                 # 'A'/'B'/'C'/'D'
+    return ch
+
+
+def out(msg: str) -> None:
+    """Print a line while the terminal is in raw mode (needs explicit CR)."""
+    sys.stdout.write(msg + "\r\n")
+    sys.stdout.flush()
 
 
 def _clamp(value: int, lo: int, hi: int) -> int:
@@ -88,31 +102,34 @@ def main():
         print("Ready. Arrows = move   c = center   q = quit")
         print(f"pan: {pan}    tilt: {tilt}")
 
-        while True:
-            key = _read_key()
+        with raw_mode(sys.stdin.fileno()):
+            while True:
+                key = read_key()
+                if DEBUG:
+                    out(f"key={key!r}")
 
-            if key in ("q", "\x1b", "\x03"):          # q, lone ESC, Ctrl-C
-                break
-            elif key == KEY_UP:
-                tilt = _clamp(tilt + TILT_STEP, TILT_MIN, TILT_MAX)
-                bot.set_tilt(tilt)
-            elif key == KEY_DOWN:
-                tilt = _clamp(tilt - TILT_STEP, TILT_MIN, TILT_MAX)
-                bot.set_tilt(tilt)
-            elif key == KEY_LEFT:
-                pan = _clamp(pan - PAN_STEP, PAN_MIN, PAN_MAX)
-                bot.set_pan(pan)
-            elif key == KEY_RIGHT:
-                pan = _clamp(pan + PAN_STEP, PAN_MIN, PAN_MAX)
-                bot.set_pan(pan)
-            elif key == "c":
-                pan, tilt = PAN_DEFAULT, TILT_DEFAULT
-                bot.set_pan(pan)
-                bot.set_tilt(tilt)
-            else:
-                continue
+                if key in ("q", "\x03", "\x04", ""):    # q, Ctrl-C, Ctrl-D, EOF
+                    break
+                elif key == KEY_UP:
+                    tilt = _clamp(tilt + TILT_STEP, TILT_MIN, TILT_MAX)
+                    bot.set_tilt(tilt)
+                elif key == KEY_DOWN:
+                    tilt = _clamp(tilt - TILT_STEP, TILT_MIN, TILT_MAX)
+                    bot.set_tilt(tilt)
+                elif key == KEY_LEFT:
+                    pan = _clamp(pan - PAN_STEP, PAN_MIN, PAN_MAX)
+                    bot.set_pan(pan)
+                elif key == KEY_RIGHT:
+                    pan = _clamp(pan + PAN_STEP, PAN_MIN, PAN_MAX)
+                    bot.set_pan(pan)
+                elif key == "c":
+                    pan, tilt = PAN_DEFAULT, TILT_DEFAULT
+                    bot.set_pan(pan)
+                    bot.set_tilt(tilt)
+                else:
+                    continue
 
-            print(f"pan: {pan}    tilt: {tilt}")
+                out(f"pan: {pan}    tilt: {tilt}")
 
     print("\nStopped. Camera re-centered.")
 
