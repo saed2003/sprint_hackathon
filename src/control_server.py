@@ -13,13 +13,17 @@ API Endpoints:
 import os
 import sys
 import json
+import math
 import subprocess
 import threading
 import time
 from pathlib import Path
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 import socket
+
+# Make sibling packages (setup_and_api, camera, ...) importable regardless of CWD.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # Configuration
 STREAM_SERVER_PORT = 8000
@@ -30,6 +34,236 @@ CAMERA_SCRIPT = Path(__file__).parent / "camera" / "stream_server.py"
 stream_process = None
 stream_running = False
 start_time = None
+
+# ── Robot driving state ────────────────────────────────────────
+DRIVE_SPEED_DEFAULT = 120
+DRIVE_SPEED_MIN = 40
+DRIVE_SPEED_MAX = 255
+# Safety: auto-stop if no drive command arrives within this window while moving
+# (covers a browser tab closing or the network dropping mid-drive).
+DRIVE_WATCHDOG_S = 0.6
+
+# held key -> translation contribution (vx: right +, vy: forward +).
+# Mirrors src/wasd/drive.py so the HTML drives exactly like the pygame version.
+_TRANS = {'w': (0, 1), 's': (0, -1), 'd': (1, 0), 'a': (-1, 0)}
+_ROT = {'q': +1, 'e': -1}            # +1 = rotate_left (CCW), -1 = rotate_right (CW)
+
+bot = None                 # lazily-created RasBot instance
+robot_lock = threading.Lock()
+run_active = False
+run_mode = 'manual'
+last_cmd = None            # last motion command tuple sent to the bot
+last_cmd_time = 0.0        # wall-clock of the last drive command (for the watchdog)
+
+
+def get_bot():
+    """Lazily create the RasBot. Returns (bot, None) or (None, error_message)."""
+    global bot
+    if bot is not None:
+        return bot, None
+    try:
+        from setup_and_api.api import RasBot
+        bot = RasBot()
+        return bot, None
+    except Exception as e:
+        return None, str(e)
+
+
+def compute_command(keys, speed):
+    """Map a set of held keys to a motion command (mirrors wasd/drive.py)."""
+    keys = {str(k).lower() for k in keys}
+    vx = sum(d[0] for k, d in _TRANS.items() if k in keys)
+    vy = sum(d[1] for k, d in _TRANS.items() if k in keys)
+    rot = sum(v for k, v in _ROT.items() if k in keys)
+    if vx or vy:
+        # angle convention matches bot.move(): 0=right, 90=forward, 180=left, 270=back
+        angle = round(math.degrees(math.atan2(vy, vx)))
+        return ('move', angle, speed)
+    if rot > 0:
+        return ('rotate_left', speed)
+    if rot < 0:
+        return ('rotate_right', speed)
+    return ('stop',)
+
+
+def apply_command(b, cmd):
+    """Send a command tuple from compute_command() to the robot."""
+    kind = cmd[0]
+    if kind == 'move':
+        b.move(cmd[2], cmd[1])
+    elif kind == 'rotate_left':
+        b.rotate_left(cmd[1])
+    elif kind == 'rotate_right':
+        b.rotate_right(cmd[1])
+    else:
+        b.stop()
+
+
+def drive(keys, speed):
+    """Apply a drive command, but only while a manual run is active."""
+    global last_cmd, last_cmd_time
+    if not run_active or run_mode != 'manual':
+        return {"status": "ignored", "message": "Run not active (press START in manual mode)"}
+    if capture_busy:
+        return {"status": "ignored", "message": "Capture in progress"}
+    b, err = get_bot()
+    if b is None:
+        return {"status": "error", "message": f"Robot unavailable: {err}"}
+    try:
+        speed = int(speed)
+    except (TypeError, ValueError):
+        speed = DRIVE_SPEED_DEFAULT
+    speed = max(DRIVE_SPEED_MIN, min(DRIVE_SPEED_MAX, speed))
+    cmd = compute_command(keys, speed)
+    with robot_lock:
+        last_cmd_time = time.time()
+        if cmd != last_cmd:          # only hit I2C when the command actually changes
+            apply_command(b, cmd)
+            last_cmd = cmd
+    return {"status": "ok", "command": cmd[0]}
+
+
+def start_run(mode):
+    """Arm a run in the given mode. Only 'manual' is implemented for now."""
+    global run_active, run_mode, last_cmd
+    if mode != 'manual':
+        return {"status": "not_implemented",
+                "message": f"'{mode}' mode is not implemented yet — only manual mode works."}
+    b, err = get_bot()
+    if b is None:
+        return {"status": "error", "message": f"Robot unavailable: {err}"}
+    from setup_and_api.api import Color
+    with robot_lock:
+        b.stop()
+        last_cmd = ('stop',)
+        run_mode = mode
+        run_active = True
+        try:
+            b.set_all_leds_color(Color.GREEN)
+            b.beep(0.1)
+        except Exception:
+            pass
+    return {"status": "running", "mode": mode,
+            "message": "Manual run started — drive with W/A/S/D and Q/E"}
+
+
+def stop_run():
+    """Disarm: halt the robot and stop accepting drive commands."""
+    global run_active, last_cmd
+    b, _ = get_bot()
+    with robot_lock:
+        run_active = False
+        last_cmd = ('stop',)
+        if b is not None:
+            try:
+                b.stop()
+                b.leds_off()
+            except Exception:
+                pass
+    return {"status": "stopped", "message": "Run stopped — robot halted"}
+
+
+def _watchdog():
+    """Stop the robot if a run is moving but no command has arrived recently."""
+    global last_cmd
+    while True:
+        time.sleep(0.15)
+        if run_active and last_cmd is not None and last_cmd[0] != 'stop':
+            if time.time() - last_cmd_time > DRIVE_WATCHDOG_S:
+                b, _ = get_bot()
+                if b is not None:
+                    with robot_lock:
+                        try:
+                            b.stop()
+                        except Exception:
+                            pass
+                        last_cmd = ('stop',)
+
+
+# ── Captures (RealSense D405) ───────────────────────────────────
+# These mirror drive.py's R (360 scan) and V (single capture). They use the
+# RealSense via StereoCapture — separate from the MJPEG webcam, so the live
+# stream keeps running. A 360 scan ROTATES the robot in place.
+capture_lock = threading.Lock()
+capture_busy = False
+capture_status = "idle"
+cam = None                 # lazily-created StereoCapture
+# Canonical project-root captures/ (what the laptop build tools and scp expect).
+# StereoCapture's own default resolves to src/captures, so we pass this explicitly.
+CAPTURES_ROOT = str(Path(__file__).resolve().parent.parent / "captures")
+
+
+def get_cam():
+    """Lazily create the StereoCapture (RealSense D405)."""
+    global cam
+    if cam is None:
+        from camera.rs_capture import StereoCapture
+        cam = StereoCapture()
+    return cam
+
+
+def _run_capture(kind):
+    """Background worker for a capture; updates capture_status as it goes."""
+    global capture_busy, capture_status, last_cmd
+    b, err = get_bot()
+    if b is None:
+        capture_status = f"error: robot unavailable ({err})"
+        capture_busy = False
+        return
+    try:
+        from setup_and_api.api import Color
+        with robot_lock:                      # make sure we're not driving
+            b.stop()
+            last_cmd = ('stop',)
+        c = get_cam()
+        try:
+            b.set_all_leds_color(Color.BLUE)
+        except Exception:
+            pass
+        if kind == "scan360":
+            from pointcloud import scan360
+            capture_status = "360 scan: rotating + capturing..."
+            session = scan360.run_scan(b, c, out_root=CAPTURES_ROOT, log=lambda *a, **k: None)
+            capture_status = f"done: {os.path.basename(session)} (scan)"
+        else:  # single
+            capture_status = "capturing single frame..."
+            folder = c.save(out_root=CAPTURES_ROOT)
+            capture_status = ("done: " + os.path.basename(folder)) if folder else "frame dropped"
+        try:
+            b.set_all_leds_color(Color.GREEN)
+            b.beep(0.1)
+        except Exception:
+            pass
+    except Exception as e:
+        capture_status = f"error: {e}"
+    finally:
+        with robot_lock:
+            try:
+                b.stop()
+            except Exception:
+                pass
+            last_cmd = ('stop',)
+            if not run_active:
+                try:
+                    b.leds_off()
+                except Exception:
+                    pass
+        capture_busy = False
+
+
+def start_capture(kind):
+    """Kick off a capture in the background if one isn't already running."""
+    global capture_busy, capture_status
+    if kind not in ("scan360", "single"):
+        return {"status": "error", "message": f"Unknown capture '{kind}'"}
+    with capture_lock:
+        if capture_busy:
+            return {"status": "busy", "message": "A capture is already running",
+                    "capture_status": capture_status}
+        capture_busy = True
+        capture_status = "starting..."
+    threading.Thread(target=_run_capture, args=(kind,), daemon=True).start()
+    return {"status": "started", "kind": kind}
 
 
 def get_local_ip():
@@ -130,6 +364,16 @@ class ControlHandler(BaseHTTPRequestHandler):
             status = get_stream_status()
             self.send_json(200, status)
 
+        elif path == "/api/run/status":
+            self.send_json(200, {
+                "run_active": run_active,
+                "mode": run_mode,
+                "last_command": last_cmd[0] if last_cmd else None,
+            })
+
+        elif path == "/api/capture/status":
+            self.send_json(200, {"busy": capture_busy, "status": capture_status})
+
         elif path == "/":
             self.send_html(200, self.get_landing_page())
 
@@ -149,8 +393,38 @@ class ControlHandler(BaseHTTPRequestHandler):
             result = stop_stream_server()
             self.send_json(200, result)
 
+        elif path == "/api/run/start":
+            body = self.read_json()
+            result = start_run(body.get("mode", "manual"))
+            code = 200 if result["status"] in ("running", "not_implemented") else 500
+            self.send_json(code, result)
+
+        elif path == "/api/run/stop":
+            self.send_json(200, stop_run())
+
+        elif path == "/api/drive":
+            body = self.read_json()
+            result = drive(body.get("keys", []), body.get("speed", DRIVE_SPEED_DEFAULT))
+            self.send_json(200, result)
+
+        elif path == "/api/capture/scan360":
+            self.send_json(200, start_capture("scan360"))
+
+        elif path == "/api/capture/single":
+            self.send_json(200, start_capture("single"))
+
         else:
             self.send_json(404, {"error": "Not found"})
+
+    def read_json(self):
+        """Parse a JSON request body; returns {} if absent/invalid."""
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            if length <= 0:
+                return {}
+            return json.loads(self.rfile.read(length).decode() or "{}")
+        except Exception:
+            return {}
 
     def do_OPTIONS(self):
         """Handle CORS preflight requests."""
@@ -248,14 +522,26 @@ def main():
     print(f"Stream Server:  http://{local_ip}:{STREAM_SERVER_PORT}/stream.mjpg")
     print(f"{'='*60}\n")
 
-    server = HTTPServer(("0.0.0.0", CONTROL_SERVER_PORT), ControlHandler)
+    # ThreadingHTTPServer so frequent drive commands aren't blocked behind the
+    # 2s sleep in stream start, and so the watchdog can run alongside requests.
+    server = ThreadingHTTPServer(("0.0.0.0", CONTROL_SERVER_PORT), ControlHandler)
+    server.daemon_threads = True
+
+    # Safety watchdog: halts the robot if drive commands stop arriving mid-move.
+    threading.Thread(target=_watchdog, daemon=True).start()
 
     try:
         print("Press Ctrl+C to stop\n")
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down...")
+        stop_run()
         stop_stream_server()
+        if bot is not None:
+            try:
+                bot.cleanup()
+            except Exception:
+                pass
         server.shutdown()
 
 

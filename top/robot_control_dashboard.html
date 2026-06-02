@@ -22,17 +22,17 @@
         .container {
             display: flex;
             height: 100vh;
-            gap: 15px;
-            padding: 15px;
+            gap: 12px;
+            padding: 10px;
         }
 
         /* Left Panel */
         .left-panel {
-            flex: 0 0 450px;
+            flex: 0 0 420px;
             display: flex;
             flex-direction: column;
-            gap: 15px;
-            overflow-y: auto;
+            gap: 10px;
+            overflow: hidden;   /* panel never scrolls; only the hotkeys box does if needed */
         }
 
         /* Right Panel - RTSP Stream */
@@ -126,15 +126,15 @@
         /* Keyboard Section */
         .keyboard-section {
             background: #2a2a2a;
-            padding: 15px;
+            padding: 10px 12px;
             border-radius: 8px;
             border: 1px solid #444;
         }
 
         .section-title {
-            font-size: 14px;
+            font-size: 13px;
             font-weight: bold;
-            margin-bottom: 12px;
+            margin-bottom: 8px;
             color: #64b5f6;
             text-transform: uppercase;
             letter-spacing: 1px;
@@ -143,7 +143,7 @@
         .keyboard-layout {
             display: grid;
             gap: 4px;
-            margin-bottom: 15px;
+            margin-bottom: 0;
         }
 
         .key-row {
@@ -153,7 +153,7 @@
 
         .key {
             flex: 1;
-            padding: 8px;
+            padding: 5px;
             background: #3a3a3a;
             border: 1px solid #555;
             border-radius: 4px;
@@ -163,8 +163,10 @@
             cursor: pointer;
             transition: all 0.1s ease;
             user-select: none;
-            min-height: 32px;
+            min-height: 30px;
+            line-height: 1.2;
             display: flex;
+            flex-direction: column;
             align-items: center;
             justify-content: center;
         }
@@ -226,6 +228,26 @@
             border-color: #ff1111;
         }
 
+        .key.speed {
+            background: #607d8b;
+            border-color: #455a64;
+            color: white;
+            font-size: 16px;
+        }
+
+        .key.speed-display {
+            background: #1a1a1a;
+            border-color: #555;
+            color: #64b5f6;
+            cursor: default;
+            font-size: 10px;
+        }
+
+        .key.speed-display:hover {
+            background: #1a1a1a;
+            border-color: #555;
+        }
+
         .spacer {
             flex: 2;
         }
@@ -233,18 +255,18 @@
         /* Mode Section */
         .mode-section {
             background: #2a2a2a;
-            padding: 15px;
+            padding: 10px 12px;
             border-radius: 8px;
             border: 1px solid #444;
         }
 
         .mode-display {
-            font-size: 24px;
+            font-size: 18px;
             font-weight: bold;
             text-align: center;
-            padding: 15px;
+            padding: 8px;
             border-radius: 4px;
-            margin-bottom: 10px;
+            margin-bottom: 6px;
         }
 
         .mode-display.manual {
@@ -263,28 +285,54 @@
             color: #aaa;
         }
 
+        .btn-run {
+            width: 100%;
+            margin-top: 8px;
+            padding: 9px;
+            font-size: 14px;
+            letter-spacing: 1px;
+            background: #4caf50;
+            color: white;
+        }
+
+        .btn-run.active {
+            background: #f44336;
+            box-shadow: 0 0 14px rgba(244, 67, 54, 0.6);
+        }
+
+        .run-status {
+            font-size: 12px;
+            text-align: center;
+            color: #aaa;
+            margin-top: 6px;
+            min-height: 15px;
+        }
+
         /* Hotkeys Section */
         .hotkeys-section {
             background: #2a2a2a;
-            padding: 15px;
+            padding: 10px 12px;
             border-radius: 8px;
             border: 1px solid #444;
+            flex: 1;
+            min-height: 0;
+            overflow-y: auto;
         }
 
         .hotkey-list {
             display: flex;
             flex-direction: column;
-            gap: 8px;
+            gap: 5px;
         }
 
         .hotkey-item {
             display: flex;
             justify-content: space-between;
-            padding: 8px;
+            padding: 5px 8px;
             background: #3a3a3a;
             border-radius: 4px;
             border-left: 3px solid #2196f3;
-            font-size: 12px;
+            font-size: 11px;
         }
 
         .hotkey-item.rotation {
@@ -459,6 +507,8 @@
                 <div class="section-title">Current Mode</div>
                 <div class="mode-display manual" id="modeDisplay">MANUAL MODE</div>
                 <div class="mode-info">Press M to toggle mode</div>
+                <button class="btn btn-run" id="runBtn" onclick="toggleRun()">▶ START RUN (Enter)</button>
+                <div class="run-status" id="runStatus">Stopped</div>
             </div>
 
             <!-- Keyboard Layout -->
@@ -478,14 +528,27 @@
                     </div>
 
                     <!-- Rotation Keys -->
-                    <div class="key-row" style="margin-top: 8px;">
+                    <div class="key-row" style="margin-top: 5px;">
                         <div class="key rotation" data-key="q">Q<br><span style="font-size: 9px;">⟲ Rotate L</span></div>
-                        <div class="key action" data-key=" ">SPACE<br><span style="font-size: 9px;">360° Capture</span></div>
+                        <div class="spacer"></div>
                         <div class="key rotation" data-key="e">E<br><span style="font-size: 9px;">⟳ Rotate R</span></div>
                     </div>
 
+                    <!-- Speed -->
+                    <div class="key-row" style="margin-top: 5px;">
+                        <div class="key speed" onclick="changeSpeed(-20)">−<br><span style="font-size: 9px;">Slower</span></div>
+                        <div class="key speed-display">SPEED<br><span id="speedValue" style="font-size: 13px;">120</span></div>
+                        <div class="key speed" onclick="changeSpeed(20)">+<br><span style="font-size: 9px;">Faster</span></div>
+                    </div>
+
+                    <!-- Capture -->
+                    <div class="key-row" style="margin-top: 5px;">
+                        <div class="key action" data-key="r" onclick="captureScan360()">R<br><span style="font-size: 9px;">360° Scan</span></div>
+                        <div class="key action" data-key="v" onclick="captureSingle()">V<br><span style="font-size: 9px;">Capture</span></div>
+                    </div>
+
                     <!-- Mode Switch -->
-                    <div class="key-row" style="margin-top: 8px;">
+                    <div class="key-row" style="margin-top: 5px;">
                         <div class="key mode" data-key="m">M<br><span style="font-size: 9px;">Toggle Mode</span></div>
                     </div>
                 </div>
@@ -507,13 +570,21 @@
                         <span class="hotkey-description">Rotate Left / Right</span>
                         <span class="hotkey-key">Q / E</span>
                     </div>
+                    <div class="hotkey-item">
+                        <span class="hotkey-description">Speed Down / Up</span>
+                        <span class="hotkey-key">- / +</span>
+                    </div>
                     <div class="hotkey-item action">
-                        <span class="hotkey-description">Capture 360° Cloud</span>
-                        <span class="hotkey-key">SPACE</span>
+                        <span class="hotkey-description">360° Scan / Single Capture</span>
+                        <span class="hotkey-key">R / V</span>
                     </div>
                     <div class="hotkey-item mode">
                         <span class="hotkey-description">Switch Manual/Auto</span>
                         <span class="hotkey-key">M</span>
+                    </div>
+                    <div class="hotkey-item">
+                        <span class="hotkey-description">Start / Stop Run</span>
+                        <span class="hotkey-key">Enter</span>
                     </div>
                 </div>
             </div>
@@ -566,8 +637,14 @@
             currentMode: 'manual',
             activeKeys: new Set(),
             keysDown: new Set(),
-            streamUrl: null
+            streamUrl: null,
+            runActive: false,      // is a run armed (robot accepting drive commands)?
+            speed: 120             // current drive speed (40-255), adjust with +/-
         };
+
+        // Movement keys that get sent to the robot while a run is active.
+        const MOVE_KEYS = ['w', 'a', 's', 'd', 'q', 'e'];
+        let driveHeartbeat = null; // interval that re-sends the held command (feeds the watchdog)
 
         // DOM Elements
         const configPanel = document.getElementById('configPanel');
@@ -582,6 +659,7 @@
         window.addEventListener('load', () => {
             controlServerInput.value = config.controlServer;
             streamUrlInput.value = config.streamServer;
+            document.getElementById('speedValue').textContent = state.speed;
             updateModeDisplay();
             checkControlServerHealth();
         });
@@ -723,9 +801,158 @@
             streamContainer.appendChild(imgElement);
         }
 
+        // ── Run control (ON/OFF) + driving ──────────────────────────────
+        function controlBase() {
+            return `http://${config.controlServer}`;
+        }
+
+        function updateRunStatus(text, on) {
+            const el = document.getElementById('runStatus');
+            el.textContent = text;
+            el.style.color = on ? '#4caf50' : '#aaa';
+        }
+
+        // The ON/OFF button: starts/stops the chosen mode's run.
+        function toggleRun() {
+            if (!state.runActive) {
+                if (state.currentMode !== 'manual') {
+                    updateRunStatus('⚠ Only MANUAL mode works for now', false);
+                    return;
+                }
+                updateRunStatus('🔄 Starting run...', false);
+                fetch(`${controlBase()}/api/run/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mode: state.currentMode })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status === 'running') {
+                        setRunActive(true);
+                    } else {
+                        updateRunStatus('✗ ' + (data.message || 'Failed to start'), false);
+                    }
+                })
+                .catch(() => updateRunStatus('✗ Control server not reachable', false));
+            } else {
+                stopRun();
+            }
+        }
+
+        function stopRun() {
+            fetch(`${controlBase()}/api/run/stop`, { method: 'POST' })
+                .catch(() => {})
+                .finally(() => setRunActive(false));
+        }
+
+        function setRunActive(on) {
+            state.runActive = on;
+            const btn = document.getElementById('runBtn');
+            if (on) {
+                btn.textContent = '■ STOP RUN (Enter)';
+                btn.classList.add('active');
+                updateRunStatus(`● RUNNING — speed ${state.speed}`, true);
+                // Heartbeat re-asserts the held command so the server-side
+                // safety watchdog doesn't stop the robot while a key is held.
+                if (driveHeartbeat) clearInterval(driveHeartbeat);
+                driveHeartbeat = setInterval(sendDrive, 150);
+            } else {
+                btn.textContent = '▶ START RUN (Enter)';
+                btn.classList.remove('active');
+                if (driveHeartbeat) { clearInterval(driveHeartbeat); driveHeartbeat = null; }
+                updateRunStatus('Stopped', false);
+            }
+        }
+
+        // Send the currently-held movement keys + speed to the robot.
+        function sendDrive() {
+            if (!state.runActive || state.currentMode !== 'manual') return;
+            const keys = [...state.keysDown].filter(k => MOVE_KEYS.includes(k));
+            fetch(`${controlBase()}/api/drive`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ keys, speed: state.speed })
+            }).catch(() => {});
+        }
+
+        function changeSpeed(delta) {
+            state.speed = Math.max(40, Math.min(255, state.speed + delta));
+            const sv = document.getElementById('speedValue');
+            if (sv) sv.textContent = state.speed;
+            if (state.runActive) {
+                updateRunStatus(`● RUNNING — speed ${state.speed}`, true);
+                sendDrive();
+            }
+        }
+
+        // ── Captures (R = 360° scan, V = single) ────────────────────────
+        function captureScan360() {
+            if (!confirm('360° scan will ROTATE the robot a full turn in place.\nMake sure it has room. Continue?')) return;
+            postCapture('scan360', '360° scan');
+        }
+
+        function captureSingle() {
+            postCapture('single', 'single capture');
+        }
+
+        function postCapture(kind, label) {
+            updateRunStatus('🔄 ' + label + ' started...', false);
+            fetch(`${controlBase()}/api/capture/${kind}`, { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status === 'started') {
+                        pollCapture();
+                    } else if (data.status === 'busy') {
+                        updateRunStatus('⚠ ' + data.message, false);
+                    } else {
+                        updateRunStatus('✗ ' + (data.message || 'Capture failed'), false);
+                    }
+                })
+                .catch(() => updateRunStatus('✗ Control server not reachable', false));
+        }
+
+        function pollCapture() {
+            fetch(`${controlBase()}/api/capture/status`)
+                .then(r => r.json())
+                .then(data => {
+                    updateRunStatus((data.busy ? '⏳ ' : '✓ ') + data.status, false);
+                    if (data.busy) {
+                        setTimeout(pollCapture, 800);
+                    } else if (state.runActive) {
+                        // restore the running banner once the capture finishes
+                        setTimeout(() => updateRunStatus(`● RUNNING — speed ${state.speed}`, true), 2500);
+                    }
+                })
+                .catch(() => {});
+        }
+
+        // Safety: if the page loses focus or is closed mid-drive, stop the robot.
+        window.addEventListener('blur', () => {
+            if (state.runActive) {
+                state.keysDown.clear();
+                document.querySelectorAll('.key.pressed').forEach(k => k.classList.remove('pressed'));
+                sendDrive();
+            }
+        });
+        window.addEventListener('beforeunload', () => {
+            if (state.runActive && navigator.sendBeacon) {
+                navigator.sendBeacon(`${controlBase()}/api/run/stop`);
+            }
+        });
+
         // Keyboard event listeners
         document.addEventListener('keydown', (e) => {
+            // Ignore keys while typing in a text field (e.g. the config IP box).
+            if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
             const key = e.key.toLowerCase();
+
+            // Run on/off hotkey (mirrors the START/STOP RUN button).
+            if (key === 'enter') { e.preventDefault(); toggleRun(); return; }
+
+            // Speed adjust (+/-) — tap keys, handle before the held-key guard.
+            if (key === '+' || key === '=') { changeSpeed(20); return; }
+            if (key === '-' || key === '_') { changeSpeed(-20); return; }
+
             if (state.keysDown.has(key)) return;
 
             state.keysDown.add(key);
@@ -736,8 +963,17 @@
             }
 
             if (key === 'm') {
+                // Switching mode mid-run is unsafe (autonomous isn't implemented),
+                // so stop any active run when toggling.
+                if (state.runActive) stopRun();
                 state.currentMode = state.currentMode === 'manual' ? 'autonomous' : 'manual';
                 updateModeDisplay();
+            } else if (key === 'r') {
+                captureScan360();
+            } else if (key === 'v') {
+                captureSingle();
+            } else if (MOVE_KEYS.includes(key)) {
+                sendDrive();
             }
 
             logAction(key);
@@ -751,21 +987,41 @@
             if (keyElement) {
                 keyElement.classList.remove('pressed');
             }
+
+            if (MOVE_KEYS.includes(key)) {
+                sendDrive();
+            }
         });
 
-        // Mouse click handlers for keys
+        // Mouse/touch handlers for on-screen keys (press-and-hold to drive).
         document.querySelectorAll('.key').forEach(keyElement => {
-            keyElement.addEventListener('mousedown', () => {
-                keyElement.classList.add('pressed');
-            });
+            const key = keyElement.getAttribute('data-key');
 
-            keyElement.addEventListener('mouseup', () => {
+            const press = (e) => {
+                if (e) e.preventDefault();
+                keyElement.classList.add('pressed');
+                if (MOVE_KEYS.includes(key)) {
+                    state.keysDown.add(key);
+                    sendDrive();
+                }
+            };
+            const release = () => {
                 keyElement.classList.remove('pressed');
-            });
+                if (MOVE_KEYS.includes(key)) {
+                    state.keysDown.delete(key);
+                    sendDrive();
+                }
+            };
+
+            keyElement.addEventListener('mousedown', press);
+            keyElement.addEventListener('mouseup', release);
+            keyElement.addEventListener('mouseleave', release);
+            keyElement.addEventListener('touchstart', press, { passive: false });
+            keyElement.addEventListener('touchend', release);
 
             keyElement.addEventListener('click', () => {
-                const key = keyElement.getAttribute('data-key');
                 if (key === 'm') {
+                    if (state.runActive) stopRun();
                     state.currentMode = state.currentMode === 'manual' ? 'autonomous' : 'manual';
                     updateModeDisplay();
                 }
