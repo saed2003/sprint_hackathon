@@ -26,7 +26,9 @@ sprint/                         ← working-dir root: OLD flat prototype + the v
     ├── requirements.txt  .gitignore
     ├── top/                    web dashboard (robot_control_dashboard.html, index.html→it)
     ├── docs/                   brief, work plan, guides, sprint info.txt (Pi creds)
-    ├── test_code/              earliest flat capture/make_pointcloud copies (scratch)
+    ├── test_code/              scratch / experiments (isolated; never imported by the robot)
+    │   ├── capture.py  make_pointcloud.py   earliest flat copies
+    │   └── object_scan/        ★ experimental OBJECT 3D-scan (turntable + robot orbit → mesh)
     ├── captures/              runtime scan output (git-ignored; also exists at src/captures)
     └── src/                    ← ALL the code (run scripts from here as the root)
         ├── control_server.py     port 9000 control API (web side brain)
