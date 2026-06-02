@@ -115,6 +115,17 @@ Z_DANGER  = (28, 0, 0)
 Z_WARNING = (28, 24, 0)
 Z_SAFE    = (0, 20, 0)
 
+# ── glow / CRT look ───────────────────────────────────────────────────────────
+NEON_GREEN  = (0, 255, 70)    # sweep + bloom green
+RING_NEON   = (0, 180, 50)    # range-ring neon green
+NEON_RED    = (255, 40, 40)   # object bloom red
+NEON_ORANGE = (255, 140, 0)   # moving-object bloom orange
+GLOW_INTENSITY = 1.0          # global glow multiplier (0=off … 1.5=intense)
+SCANLINES_ON   = True         # CRT horizontal scanline overlay
+SCANLINE_ALPHA = 25           # darkness of each scanline (0-255)
+SCANLINE_GAP   = 3            # pixels between scanlines
+TEXT_BLOOM     = True         # soft glow behind panel text
+
 
 def _clamp(v, lo, hi):
     return max(lo, min(hi, v))
@@ -467,11 +478,205 @@ class SoundEngine:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  FONT MANAGER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_FONT_LINKS = {
+    "orbitron":      "fonts.google.com/specimen/Orbitron",
+    "orbitron_bold": "fonts.google.com/specimen/Orbitron",
+    "mono":          "fonts.google.com/specimen/Share+Tech+Mono",
+}
+
+
+class FontManager:
+    """Loads Orbitron / Share Tech Mono .ttf files (same folder) with fallback.
+
+    Place the .ttf files next to this script:
+        Orbitron-Regular.ttf
+        Orbitron-Bold.ttf
+        ShareTechMono-Regular.ttf
+    If a file is missing the system never crashes — it falls back to the
+    built-in monospace font and prints a one-time download hint.
+    """
+
+    FILES = {
+        "orbitron":      "Orbitron-Regular.ttf",
+        "orbitron_bold": "Orbitron-Bold.ttf",
+        "mono":          "ShareTechMono-Regular.ttf",
+    }
+
+    def __init__(self):
+        import pygame
+        self.pg = pygame
+        self.dir = os.path.dirname(os.path.abspath(__file__))
+        self._cache = {}
+        self._warned = set()
+
+    def get(self, family, size, bold=False):
+        key = (family, size)
+        if key in self._cache:
+            return self._cache[key]
+        pygame = self.pg
+        path = os.path.join(self.dir, self.FILES.get(family, ""))
+        font = None
+        if os.path.exists(path):
+            try:
+                font = pygame.font.Font(path, size)
+            except Exception:
+                font = None
+        if font is None:
+            if family not in self._warned:
+                fname = self.FILES.get(family, family)
+                link = _FONT_LINKS.get(family, "fonts.google.com")
+                print(f"[font] {fname} not found, using fallback font. "
+                      f"Download from {link}")
+                self._warned.add(family)
+            font = pygame.font.SysFont(
+                "monospace", size, bold=bold or family == "orbitron_bold")
+        self._cache[key] = font
+        return font
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  GLOW RENDERER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class GlowRenderer:
+    """Neon glow + CRT effects for the radar.
+
+    Performance contract:
+      • One reusable SRCALPHA 'layer' surface — cleared (not re-allocated) each
+        frame. All vector glow (sweep, trail, blips, danger pulse) is drawn here
+        then blitted once.
+      • The CRT scanline overlay is generated ONCE with numpy and blitted as-is.
+      • Rendered glow-text surfaces are cached by content, so static strings
+        cost nothing after the first frame.
+    """
+
+    def __init__(self, radar_w, h, full_w):
+        import pygame
+        self.pg = pygame
+        self.radar_w = radar_w
+        self.h = h
+        self.intensity = GLOW_INTENSITY
+        self.layer = pygame.Surface((radar_w, h), pygame.SRCALPHA)
+        self.scanlines = self._build_scanlines(full_w, h)
+        self._tcache = {}
+
+    # ── reusable layer lifecycle ────────────────────────────────────────────
+    def begin(self):
+        self.layer.fill((0, 0, 0, 0))
+
+    def commit(self, screen):
+        screen.blit(self.layer, (0, 0))
+
+    def clear_below(self, y):
+        """Wipe anything drawn below the radar origin (keeps a clean semicircle)."""
+        self.layer.fill((0, 0, 0, 0), rect=(0, y, self.radar_w, self.h - y))
+
+    # ── glow primitives (default target = reusable layer) ─────────────────────
+    def line(self, start, end, color, layers, fade=1.0, target=None):
+        """Multi-layer glow line: layers = [(width, alpha), ...] widest first."""
+        pg = self.pg
+        surf = self.layer if target is None else target
+        for width, alpha in layers:
+            a = int(alpha * fade * self.intensity)
+            if a <= 0:
+                continue
+            pg.draw.line(surf, (*color, min(255, a)), start, end, max(1, width))
+
+    def circle(self, center, base_r, color, layers, fade=1.0, target=None):
+        """Multi-layer glow circle: layers = [(extra_radius, alpha), ...] outer first."""
+        pg = self.pg
+        surf = self.layer if target is None else target
+        for extra, alpha in layers:
+            a = int(alpha * fade * self.intensity)
+            r = int(base_r + extra)
+            if a <= 0 or r <= 0:
+                continue
+            pg.draw.circle(surf, (*color, min(255, a)), center, r)
+
+    def ring(self, center, r, color, layers, target=None):
+        """Multi-layer glow ring (outline): layers = [(width, alpha), ...]."""
+        pg = self.pg
+        surf = self.layer if target is None else target
+        for width, alpha in layers:
+            a = int(alpha * self.intensity)
+            if a <= 0:
+                continue
+            pg.draw.circle(surf, (*color, min(255, a)), center, r, max(1, width))
+
+    def zone(self, center, radius_px, rgba, target=None):
+        """Single filled circle with explicit RGBA — used for the pulsing
+        danger zone tint. Alpha is taken as-is (not scaled by intensity)."""
+        pg = self.pg
+        surf = self.layer if target is None else target
+        pg.draw.circle(surf, rgba, center, int(radius_px))
+
+    # ── CRT scanlines (built once with numpy) ─────────────────────────────────
+    def _build_scanlines(self, w, h):
+        pg = self.pg
+        surf = pg.Surface((w, h), pg.SRCALPHA)
+        if not SCANLINES_ON:
+            return surf
+        try:
+            import numpy as np
+            alpha = np.zeros((w, h), dtype=np.uint8)
+            alpha[:, ::SCANLINE_GAP] = SCANLINE_ALPHA      # every gap-th row
+            px = pg.surfarray.pixels_alpha(surf)
+            px[:, :] = alpha
+            del px                                          # unlock surface
+        except Exception:
+            for y in range(0, h, SCANLINE_GAP):
+                pg.draw.line(surf, (0, 0, 0, SCANLINE_ALPHA), (0, y), (w, y))
+        return surf
+
+    def apply_scanlines(self, screen):
+        if SCANLINES_ON:
+            screen.blit(self.scanlines, (0, 0))
+
+    # ── glowing text ──────────────────────────────────────────────────────────
+    def text(self, screen, font, text, color, pos, bloom=True, glow_color=None):
+        """Draw text with an optional soft bloom behind it. Cached by content."""
+        pg = self.pg
+        do_bloom = bloom and TEXT_BLOOM and self.intensity > 0
+        key = (id(font), text, color, do_bloom, glow_color)
+        entry = self._tcache.get(key)
+        if entry is None:
+            sharp = font.render(text, True, color)
+            glow = None
+            if do_bloom:
+                gc = glow_color or NEON_GREEN
+                base = font.render(text, True, gc)
+                gw = max(1, int(base.get_width() * 1.06) + 2)
+                gh = max(1, int(base.get_height() * 1.06) + 2)
+                glow = pg.transform.smoothscale(base, (gw, gh)).convert_alpha()
+                # scale the bloom's alpha down (works on per-pixel-alpha text)
+                a = int(min(255, 60 * self.intensity))
+                glow.fill((255, 255, 255, a), special_flags=pg.BLEND_RGBA_MULT)
+            if len(self._tcache) > 500:
+                self._tcache.clear()
+            entry = (sharp, glow)
+            self._tcache[key] = entry
+        sharp, glow = entry
+        if glow is not None:
+            dx = (glow.get_width() - sharp.get_width()) // 2
+            dy = (glow.get_height() - sharp.get_height()) // 2
+            screen.blit(glow, (pos[0] - dx, pos[1] - dy))
+        screen.blit(sharp, pos)
+        return sharp.get_width()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  RADAR UI
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class RadarUI:
-    """Draws the entire radar scene with pygame (double-buffered, 30 FPS)."""
+    """Draws the entire radar scene with pygame (double-buffered, 30 FPS).
+
+    Uses FontManager (military fonts + fallback) and GlowRenderer (neon glow,
+    CRT scanlines, text bloom). All scene logic is unchanged — only the look.
+    """
 
     def __init__(self, tracker):
         import pygame
@@ -487,12 +692,24 @@ class RadarUI:
 
         self.screen = pygame.display.set_mode(WINDOW_SIZE, pygame.DOUBLEBUF)
         pygame.display.set_caption("RASPBOT RADAR v1.0")
-        self.font_s = pygame.font.SysFont("consolas", 15)
-        self.font_m = pygame.font.SysFont("consolas", 19, bold=True)
-        self.font_l = pygame.font.SysFont("consolas", 26, bold=True)
-        self.font_xl = pygame.font.SysFont("consolas", 52, bold=True)
 
-        # static background (zones + grid) pre-rendered once
+        # military fonts (Orbitron / Share Tech Mono) with safe fallback
+        self.fonts = FontManager()
+        self.f_title = self.fonts.get("orbitron_bold", 18)   # panel title
+        self.f_data  = self.fonts.get("mono", 19)            # live readouts
+        self.f_alert = self.fonts.get("orbitron_bold", 34)   # DANGER text
+        self.f_xl    = self.fonts.get("orbitron_bold", 50)   # big distance
+        self.f_ring  = self.fonts.get("mono", 12)            # ring labels
+        self.f_spoke = self.fonts.get("mono", 14)            # angle labels
+        self.f_obj   = self.fonts.get("orbitron", 13)        # object size labels
+        self.f_small = self.fonts.get("mono", 15)            # controls / misc
+
+        # neon glow + CRT renderer (surfaces pre-allocated here, not in loop)
+        self.glow = GlowRenderer(self.radar_w, self.h, self.w)
+        # reusable alert-border surface (cleared + redrawn, never re-allocated)
+        self._border = pygame.Surface(WINDOW_SIZE, pygame.SRCALPHA)
+
+        # static background (zones + glowing grid) pre-rendered once
         self._bg = self._build_background()
 
     # ── geometry ──────────────────────────────────────────────────────────────
@@ -518,23 +735,34 @@ class RadarUI:
         # repaint bottom (below origin) black so it's a clean semicircle
         pg.draw.rect(surf, C_BLACK, (0, self.cy, self.radar_w, self.h - self.cy))
 
-        # range rings + labels
+        # glowing range rings — drawn on a temp SRCALPHA layer then blitted once
+        glow_layer = pg.Surface((self.radar_w, self.h), pg.SRCALPHA)
+        ring_layers = [(3, 20), (2, 60), (1, 150)]   # outer glow → core
         for cm in (20, 50, 100, 200):
             if cm > MAX_DISTANCE:
                 continue
             r = int(cm * self.ppc)
-            col = C_RING_HI if cm == 200 else C_RING
-            pg.draw.circle(surf, col, (self.cx, self.cy), r, 1)
-            lbl = self.font_s.render(f"{cm}cm", True, C_RING_HI)
-            surf.blit(lbl, (self.cx + 4, self.cy - r - 16))
+            self.glow.ring((self.cx, self.cy), r, RING_NEON, ring_layers,
+                           target=glow_layer)
+        # clean off the lower half of the glow rings
+        glow_layer.fill((0, 0, 0, 0), rect=(0, self.cy, self.radar_w, self.h - self.cy))
+        surf.blit(glow_layer, (0, 0))
 
-        # bearing spokes every 30°
+        # ring labels (Share Tech Mono, dim green)
+        for cm in (20, 50, 100, 200):
+            if cm > MAX_DISTANCE:
+                continue
+            r = int(cm * self.ppc)
+            lbl = self.f_ring.render(f"{cm}cm", True, C_RING_HI)
+            surf.blit(lbl, (self.cx + 4, self.cy - r - 15))
+
+        # bearing spokes every 30° + angle labels
         b = -90
         while b <= 90:
             x = int(self.cx + self.radius * math.sin(math.radians(b)))
             y = int(self.cy - self.radius * math.cos(math.radians(b)))
             pg.draw.line(surf, C_GRID, (self.cx, self.cy), (x, y), 1)
-            lbl = self.font_s.render(f"{b:+d}", True, C_GRID)
+            lbl = self.f_spoke.render(f"{b:+d}", True, C_GRID)
             surf.blit(lbl, (x - 12, y - 6 if b > -90 else y + 6))
             b += 30
         return surf
@@ -547,87 +775,106 @@ class RadarUI:
         self.screen.fill(C_BLACK)
         self.screen.blit(self._bg, (0, 0))
 
+        # all neon vector graphics composite onto the reusable glow layer
+        self.glow.begin()
+        self._draw_danger_zone(nearest)
         self._draw_trail(trail)
         self._draw_sweep(sweep_bearing)
         self._draw_blips(blips)
-        self._draw_objects(objects)
+        self._draw_object_arrows(objects)
+        self.glow.clear_below(self.cy)          # keep a clean semicircle
+        self.glow.commit(self.screen)
+
+        # sharp overlays (text + crosshair) on top of the glow
+        self._draw_object_labels(objects)
         self._draw_nearest(nearest)
         self._draw_panel(state, distance, angle, objects, nearest, muted,
                          speed, sweep_on)
+
+        # CRT scanlines over everything, then the alert border on top
+        self.glow.apply_scanlines(self.screen)
         self._draw_border(state)
         pg.display.flip()
 
+    def _draw_danger_zone(self, nearest):
+        """Pulsing red fill over the inner zone when an object is in danger."""
+        if nearest is None or nearest["range"] >= DANGER_ZONE:
+            return
+        pulse = abs(math.sin(time.time() * 5))
+        alpha = int(15 + pulse * 45)            # 15 → 60
+        r = int(DANGER_ZONE * self.ppc)
+        self.glow.zone((self.cx, self.cy), r, (255, 0, 0, alpha))
+
     def _draw_trail(self, trail):
-        pg = self.pg
+        """Fading neon ghost trail behind the sweep (numpy-vectorized fade)."""
+        if not trail:
+            return
+        import numpy as np
         now = time.time()
-        for t, b in trail:
-            age = now - t
-            if age > 1.2:
-                continue
-            a = 1.0 - age / 1.2
-            x = int(self.cx + self.radius * math.sin(math.radians(b)))
-            y = int(self.cy - self.radius * math.cos(math.radians(b)))
-            col = (int(C_SWEEP[0] * a * 0.5),
-                   int(C_SWEEP[1] * a * 0.5),
-                   int(C_SWEEP[2] * a * 0.5))
-            pg.draw.line(self.screen, col, (self.cx, self.cy), (x, y), 1)
+        ts = np.array([t for t, _ in trail], dtype=float)
+        bs = np.array([b for _, b in trail], dtype=float)
+        ages = now - ts
+        mask = ages <= 1.2
+        if not mask.any():
+            return
+        alphas = (1.0 - ages / 1.2)[mask]
+        bears = np.radians(bs[mask])
+        xs = (self.cx + self.radius * np.sin(bears)).astype(int)
+        ys = (self.cy - self.radius * np.cos(bears)).astype(int)
+        for x, y, a in zip(xs, ys, alphas):
+            self.glow.line((self.cx, self.cy), (int(x), int(y)), NEON_GREEN,
+                           [(3, 30), (1, 110)], fade=float(a))
 
     def _draw_sweep(self, bearing):
-        pg = self.pg
+        """Neon-tube sweep arm: outer bloom → bright core + glowing tip."""
         x = int(self.cx + self.radius * math.sin(math.radians(bearing)))
         y = int(self.cy - self.radius * math.cos(math.radians(bearing)))
-        pg.draw.line(self.screen, (0, 90, 30), (self.cx, self.cy), (x, y), 5)
-        pg.draw.line(self.screen, C_SWEEP, (self.cx, self.cy), (x, y), 2)
-        pg.draw.circle(self.screen, C_SWEEPHI, (x, y), 4)
+        self.glow.line((self.cx, self.cy), (x, y), NEON_GREEN,
+                       [(8, 30), (4, 80), (2, 180), (1, 255)])
+        self.glow.circle((x, y), 3, (200, 255, 210),
+                         [(5, 60), (2, 160), (0, 255)])
 
-    def _blip_color_size(self, dist):
+    def _blip_base(self, dist):
+        """Return (color, base_radius) for a blip at this distance."""
         if dist < DANGER_ZONE:
-            pulse = 4 + int(3 * abs(math.sin(time.time() * 6)))
-            return C_RED, 8 + pulse
+            pulse = abs(math.sin(time.time() * 5))
+            return NEON_RED, int(8 + pulse * 8)      # pulsing breathing dot
         if dist < WARNING_ZONE:
-            return C_RED, 6
+            return NEON_RED, 6
         return C_RED_DIM, 4
 
     def _draw_blips(self, blips):
-        pg = self.pg
+        """Glowing red object dots with 5-layer bloom; pulse when very close."""
         now = time.time()
+        layers = [(12, 15), (8, 30), (5, 60), (2, 120), (0, 255)]
         for bearing, (dist, ts) in blips.items():
-            a = max(0.2, 1.0 - (now - ts) / BLIP_PERSIST_S)
+            fade = max(0.2, 1.0 - (now - ts) / BLIP_PERSIST_S)
             x, y = self.polar(bearing, dist)
-            col, size = self._blip_color_size(dist)
-            col = (int(col[0] * a), int(col[1] * a), int(col[2] * a))
-            # glow
-            pg.draw.circle(self.screen, (int(col[0] * 0.4),
-                                         int(col[1] * 0.4),
-                                         int(col[2] * 0.4)), (x, y), size + 3)
-            pg.draw.circle(self.screen, col, (x, y), size)
+            col, base = self._blip_base(dist)
+            self.glow.circle((x, y), base, col, layers, fade=fade)
 
-    def _draw_objects(self, objects):
-        pg = self.pg
+    def _draw_object_arrows(self, objects):
+        """Movement arrows (orange, glowing) drawn on the glow layer."""
+        for o in objects:
+            if not (o["moving"] and o["from"] is not None):
+                continue
+            x, y = self.polar(o["bearing"], o["range"])
+            fb, fr = o["from"]
+            fx, fy = self.polar(fb, fr)
+            self.glow.line((fx, fy), (x, y), NEON_ORANGE, [(4, 60), (2, 200)])
+            ang = math.atan2(y - fy, x - fx)
+            for da in (math.radians(150), math.radians(-150)):
+                hx = int(x + 10 * math.cos(ang + da))
+                hy = int(y + 10 * math.sin(ang + da))
+                self.glow.line((x, y), (hx, hy), NEON_ORANGE, [(3, 200)])
+
+    def _draw_object_labels(self, objects):
+        """Object size labels (Orbitron) drawn sharp over the glow."""
         for o in objects:
             x, y = self.polar(o["bearing"], o["range"])
-            moving = o["moving"]
-            col = C_ORANGE if moving else C_RED
-            # size label
-            tag = f"{o['size'][0]}"            # S / M / L
-            if moving:
-                tag += " MOV"
-            lbl = self.font_s.render(tag, True, col)
-            self.screen.blit(lbl, (x + 8, y - 8))
-            # movement arrow from previous position
-            if moving and o["from"] is not None:
-                fb, fr = o["from"]
-                fx, fy = self.polar(fb, fr)
-                pg.draw.line(self.screen, C_ORANGE, (fx, fy), (x, y), 2)
-                self._arrow_head(fx, fy, x, y)
-
-    def _arrow_head(self, x0, y0, x1, y1):
-        pg = self.pg
-        ang = math.atan2(y1 - y0, x1 - x0)
-        for da in (math.radians(150), math.radians(-150)):
-            hx = x1 + 9 * math.cos(ang + da)
-            hy = y1 + 9 * math.sin(ang + da)
-            pg.draw.line(self.screen, C_ORANGE, (x1, y1), (int(hx), int(hy)), 2)
+            col = C_ORANGE if o["moving"] else C_RED
+            tag = o["size"][0] + (" MOV" if o["moving"] else "")
+            self.screen.blit(self.f_obj.render(tag, True, col), (x + 9, y - 9))
 
     def _draw_nearest(self, nearest):
         if nearest is None:
@@ -646,78 +893,93 @@ class RadarUI:
     def _draw_panel(self, state, distance, angle, objects, nearest, muted,
                     speed, sweep_on):
         pg = self.pg
+        glow = self.glow
         px = self.radar_w
         pg.draw.rect(self.screen, C_PANEL, (px, 0, self.panel_w, self.h))
         pg.draw.line(self.screen, C_PANELLN, (px, 0), (px, self.h), 2)
 
         x = px + 14
-        y = 18
-        self.screen.blit(self.font_m.render("RASPBOT RADAR v1.0", True, C_TEXTHI),
-                         (x, y)); y += 30
-        pg.draw.line(self.screen, C_PANELLN, (x, y), (px + self.panel_w - 14, y), 1)
-        y += 16
-
-        dist_txt = f"{distance:.0f} cm" if distance and distance > 0 else "-- cm"
-        rows = [
-            ("Distance:", dist_txt),
-            ("Angle:", f"{angle:+.0f}°"),
-            ("Object:", "YES" if nearest else "NO"),
-            ("Status:", state),
-            ("Objects:", str(len(objects))),
-        ]
-        for label, val in rows:
-            self.screen.blit(self.font_s.render(label, True, C_TEXT), (x, y))
-            vc = C_TEXTHI
-            if label == "Status:":
-                vc = (C_DANGER if state == "DANGER"
-                      else C_ORANGE if state == "MOVING"
-                      else C_WARNCOL if state == "PAUSED" else C_TEXTHI)
-            self.screen.blit(self.font_s.render(str(val), True, vc), (x + 95, y))
-            y += 24
-
-        y += 8
+        y = 16
+        # title — Orbitron-Bold with green bloom
+        glow.text(self.screen, self.f_title, "RASPBOT RADAR", C_TEXTHI, (x, y),
+                  bloom=True, glow_color=NEON_GREEN)
+        y += 24
+        glow.text(self.screen, self.f_small, "v1.0  PPI SONAR", C_TEXT, (x, y),
+                  bloom=False)
+        y += 22
         pg.draw.line(self.screen, C_PANELLN, (x, y), (px + self.panel_w - 14, y), 1)
         y += 14
 
-        # large distance readout when in danger
+        # live data — Share Tech Mono. Labels glow (static), values sharp.
+        dist_txt = f"{distance:.0f} cm" if distance and distance > 0 else "-- cm"
+        rows = [
+            ("DISTANCE", dist_txt, C_TEXTHI),
+            ("ANGLE", f"{angle:+.0f} deg", C_TEXTHI),
+            ("OBJECT", "YES" if nearest else "NO",
+             C_RED if nearest else C_TEXTHI),
+            ("STATUS", state,
+             (C_DANGER if state == "DANGER" else C_ORANGE if state == "MOVING"
+              else C_WARNCOL if state == "PAUSED" else C_TEXTHI)),
+            ("OBJECTS", str(len(objects)), C_TEXTHI),
+        ]
+        for label, val, vc in rows:
+            glow.text(self.screen, self.f_small, label, C_TEXT, (x, y),
+                      bloom=True, glow_color=NEON_GREEN)
+            self.screen.blit(self.f_data.render(str(val), True, vc), (x + 100, y - 2))
+            y += 26
+
+        y += 6
+        pg.draw.line(self.screen, C_PANELLN, (x, y), (px + self.panel_w - 14, y), 1)
+        y += 12
+
+        # large glowing DANGER alert + distance readout
         if state == "DANGER" and distance:
-            self.screen.blit(self.font_xl.render(f"{distance:.0f}", True, C_DANGER),
-                             (x, y))
-            self.screen.blit(self.font_s.render("cm", True, C_DANGER), (x + 96, y + 30))
-        y += 64
+            glow.text(self.screen, self.f_alert, "DANGER", C_DANGER, (x, y),
+                      bloom=True, glow_color=(255, 60, 60))
+            y += 36
+            glow.text(self.screen, self.f_xl, f"{distance:.0f}", C_DANGER, (x, y),
+                      bloom=True, glow_color=(255, 60, 60))
+            self.screen.blit(self.f_small.render("cm", True, C_DANGER), (x + 110, y + 30))
+            y += 26
+        y += 62
 
         # sweep progress bar
-        frac = (angle + 90) / 180.0
-        frac = _clamp(frac, 0, 1)
+        frac = _clamp((angle + 90) / 180.0, 0, 1)
         bar_w = self.panel_w - 28
         pg.draw.rect(self.screen, C_PANELLN, (x, y, bar_w, 16), 1)
         pg.draw.rect(self.screen, C_SWEEP, (x + 1, y + 1,
                                             int((bar_w - 2) * frac), 14))
-        self.screen.blit(self.font_s.render(f"SWEEP {int(frac*100):3d}%", True, C_TEXT),
+        self.screen.blit(self.f_small.render(f"SWEEP {int(frac*100):3d}%", True, C_TEXT),
                          (x, y + 20))
-        y += 50
+        y += 48
 
-        # controls + state
         pg.draw.line(self.screen, C_PANELLN, (x, y), (px + self.panel_w - 14, y), 1)
         y += 12
         ctrl = [
-            f"[S] Sweep  : {'ON' if sweep_on else 'OFF'}",
-            f"[M] Sound  : {'MUTED' if muted else 'ON'}",
-            f"[+/-] Speed: {speed}",
-            "[R] Reset dots",
-            "[Q] Quit",
+            f"[S] SWEEP  : {'ON' if sweep_on else 'OFF'}",
+            f"[M] SOUND  : {'MUTED' if muted else 'ON'}",
+            f"[+/-] SPEED: {speed}",
+            "[R] RESET DOTS",
+            "[Q] QUIT",
         ]
         for c in ctrl:
-            self.screen.blit(self.font_s.render(c, True, C_TEXT), (x, y))
+            glow.text(self.screen, self.f_small, c, C_TEXT, (x, y),
+                      bloom=True, glow_color=NEON_GREEN)
             y += 22
 
     def _draw_border(self, state):
+        """Glowing alert border (reuses one surface). DANGER pulses red."""
         pg = self.pg
         if state == "DANGER":
-            if int(time.time() * 4) % 2 == 0:
-                pg.draw.rect(self.screen, C_DANGER, (0, 0, self.w, self.h), 6)
+            pulse = abs(math.sin(time.time() * 5))
+            alpha = int(40 + pulse * 160)
+            self._border.fill((0, 0, 0, 0))
+            pg.draw.rect(self._border, (255, 0, 0, alpha), (0, 0, self.w, self.h), 8)
+            self.screen.blit(self._border, (0, 0))
         elif state == "MOVING":
-            pg.draw.rect(self.screen, C_ORANGE, (0, 0, self.w, self.h), 3)
+            self._border.fill((0, 0, 0, 0))
+            pg.draw.rect(self._border, (255, 140, 0, 120), (0, 0, self.w, self.h), 4)
+            self.screen.blit(self._border, (0, 0))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -841,10 +1103,28 @@ class RadarSystem:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def main():
+    global GLOW_INTENSITY, SCANLINES_ON, TEXT_BLOOM, FPS
     ap = argparse.ArgumentParser(description="RASPBOT pygame radar (VNC).")
     ap.add_argument("--demo", action="store_true",
                     help="fake data, no hardware (preview on the laptop)")
+    ap.add_argument("--low", action="store_true",
+                    help="low-bandwidth VNC mode: dim glow, no scanlines/bloom, 20 FPS")
+    ap.add_argument("--glow", type=float, default=None,
+                    help="glow intensity 0..1.5 (0 = flat, 1 = default)")
+    ap.add_argument("--no-scanlines", action="store_true",
+                    help="disable the CRT scanline overlay")
     args = ap.parse_args()
+
+    # adjust globals BEFORE building the UI (GlowRenderer reads them at init)
+    if args.low:
+        GLOW_INTENSITY = 0.5
+        SCANLINES_ON = False
+        TEXT_BLOOM = False
+        FPS = 20
+    if args.glow is not None:
+        GLOW_INTENSITY = max(0.0, args.glow)
+    if args.no_scanlines:
+        SCANLINES_ON = False
 
     try:
         RadarSystem(demo=args.demo).run()
