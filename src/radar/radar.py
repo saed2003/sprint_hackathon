@@ -5,6 +5,15 @@ distance sensor at each step (the sensor is mounted on the pan/tilt head, so it
 points wherever the servo points), and renders a classic green PPI ("plan
 position indicator") radar sweep.
 
+Enhanced features:
+  • Noise filtering  — per-angle median filter + outlier rejection, so a single
+                       spurious HC-SR04 spike no longer paints a phantom blip.
+  • Object detection — connected returns are clustered into discrete objects,
+                       each labeled with range, bearing and width; nearest tracked.
+  • Distance colors  — returns are tinted red (near) → yellow → green (far).
+  • Collision alerts — on-screen warning banner + throttled beep + LED tint when
+                       an object enters the danger zone.
+
 Three display backends:
 
   --web      MJPEG over HTTP — view from any browser, works headless over SSH.
@@ -18,6 +27,7 @@ Run on the Pi (data collection needs smbus), view from the laptop:
     python3 radar/radar.py                       # web, http://sprint.local:8001/
     python3 radar/radar.py --window              # VNC desktop window
     python3 radar/radar.py --arc 60 --max 150    # narrow 60deg arc, 1.5m range
+    python3 radar/radar.py --danger 40           # collision warning under 40 cm
 
 Preview the display on the laptop with fake data:
     python radar/radar.py --demo
@@ -32,6 +42,7 @@ import time
 import socket
 import argparse
 import threading
+import statistics
 from collections import deque
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
@@ -53,6 +64,19 @@ SURF_GAP_MUL = 1.8       # max angular gap (x step) before the surface breaks
 SIZE_PX      = 720       # output image is SIZE_PX x SIZE_PX
 WEB_PORT     = 8001      # stream_server uses 8000; stay off it
 
+# ── noise filtering ────────────────────────────────────────────────────────
+MEDIAN_WINDOW = 5        # per-angle ring buffer length for the median filter
+OUTLIER_CM    = 40       # a read this far from the running median is rejected once
+                         # (a genuine change confirms on the next pass)
+
+# ── collision alerts ────────────────────────────────────────────────────────
+DANGER_CM    = 30        # nearest return under this → red alert + beep
+WARN_CM      = 60        # nearest return under this → amber caution
+BEEP_THROTTLE_S = 1.0    # minimum seconds between collision beeps
+
+# ── object detection ─────────────────────────────────────────────────────────
+MIN_OBJECT_PTS = 1       # runs with fewer points than this are ignored (0 = keep all)
+
 # Colors are BGR (OpenCV order).
 C_BG     = (8, 18, 8)
 C_RING   = (35, 80, 35)
@@ -63,22 +87,37 @@ C_BLIP   = (80, 240, 80)
 C_NEAR   = (60, 60, 255)     # closest object highlight (red)
 C_TEXT   = (90, 220, 90)
 C_TEXTHI = (200, 255, 200)
+C_WARN   = (60, 200, 255)    # amber caution (BGR)
+C_DANGER = (60, 60, 255)     # red alert (BGR)
 
 
 def _clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
 
+def _dist_color(dist_cm, max_range):
+    """Distance-graded color: red (near) → yellow → green (far), BGR."""
+    frac = _clamp(dist_cm / max_range, 0.0, 1.0)
+    if frac < 0.5:                       # red → yellow over the near half
+        t = frac / 0.5
+        b, g, r = 40, int(60 + 195 * t), 255
+    else:                                # yellow → green over the far half
+        t = (frac - 0.5) / 0.5
+        b, g, r = 40, 255, int(255 - 195 * t)
+    return (b, g, r)
+
+
 class Radar:
     """Shared scan state + renderer. One scan thread writes, renderer reads."""
 
     def __init__(self, arc=180, max_range=MAX_RANGE_CM, step=STEP_DEG,
-                 settle=SETTLE_S, size=SIZE_PX, leds=True):
+                 settle=SETTLE_S, size=SIZE_PX, leds=True, danger=DANGER_CM):
         self.max_range = max_range
         self.step = step
         self.settle = settle
         self.size = size
         self.leds = leds
+        self.danger = danger
 
         # Pan sweep limits, centered on straight-ahead, clamped to servo range.
         half = arc / 2.0
@@ -86,10 +125,18 @@ class Radar:
         self.pan_hi = int(_clamp(PAN_CENTER + half, 0, 180))
 
         self._lock = threading.Lock()
-        self._hits = {}              # pan_angle -> (distance_cm, timestamp)
+        self._hits = {}              # pan_angle -> (distance_cm, timestamp)  [filtered]
+        self._raw = {}               # pan_angle -> deque of recent raw distances (median filter)
         self._trail = deque(maxlen=64)   # (timestamp, pan_angle) sweep history
         self._cur_pan = PAN_CENTER
         self._running = True
+
+        # telemetry
+        self._read_times = deque(maxlen=60)   # timestamps of recent reads (scan rate)
+        self._read_rate = 0.0
+        self._last_beep = 0.0
+        self._last_render_t = None
+        self._fps = 0.0
 
     # ── geometry ─────────────────────────────────────────────────────────────
 
@@ -105,15 +152,45 @@ class Radar:
 
     # ── scanning ─────────────────────────────────────────────────────────────
 
+    def _filter(self, pan, dist_cm):
+        """Median-filter a raw reading at this angle and reject lone outliers.
+
+        Returns the filtered distance, or None if the reading is an outlier
+        that hasn't been confirmed yet (so a single HC-SR04 spike is dropped).
+        """
+        buf = self._raw.setdefault(pan, deque(maxlen=MEDIAN_WINDOW))
+
+        # Outlier rejection: if we have history and this read jumps far from the
+        # running median, drop it this once but remember it so a real change
+        # (which repeats) confirms on the next pass.
+        if buf:
+            med = statistics.median(buf)
+            if abs(dist_cm - med) > OUTLIER_CM:
+                # tentatively record so a sustained change still gets through
+                buf.append(dist_cm)
+                # if the buffer now agrees on the new value, accept the median
+                return statistics.median(buf)
+        buf.append(dist_cm)
+        return statistics.median(buf)
+
     def _record(self, pan, dist_cm):
         now = time.time()
         valid = MIN_RANGE_CM <= dist_cm <= self.max_range
+
         with self._lock:
             self._cur_pan = pan
             self._trail.append((now, pan))
+            self._read_times.append(now)
+            if len(self._read_times) >= 2:
+                span = self._read_times[-1] - self._read_times[0]
+                self._read_rate = (len(self._read_times) - 1) / span if span > 0 else 0.0
+
             if valid:
-                self._hits[pan] = (dist_cm, now)
+                filtered = self._filter(pan, dist_cm)
+                if filtered is not None:
+                    self._hits[pan] = (filtered, now)
             else:
+                self._raw.pop(pan, None)
                 self._hits.pop(pan, None)   # clear stale blip at this angle
 
     def scan_hardware(self):
@@ -133,6 +210,7 @@ class Radar:
 
                 if self.leds:
                     self._update_leds(bot, Color, dist)
+                self._maybe_beep(bot, dist)
 
                 pan += direction * self.step
                 if pan >= self.pan_hi:
@@ -152,6 +230,9 @@ class Radar:
             if b > 20:
                 wall = min(wall, 90.0 / max(math.cos(math.radians(b - 45)), 0.3))
             dist = wall + np.random.randn() * 3.0
+            # inject the occasional spike so the noise filter has work to do
+            if np.random.random() < 0.05:
+                dist = np.random.uniform(MIN_RANGE_CM, self.max_range)
             if abs(b) > 75:                 # open space at the edges
                 dist = 0.0
             self._record(pan, float(dist))
@@ -168,14 +249,27 @@ class Radar:
         try:
             if not (MIN_RANGE_CM <= dist <= self.max_range):
                 bot.set_all_leds_color(Color.GREEN)
-            elif dist < self.max_range * 0.25:
+            elif dist < self.danger:
                 bot.set_all_leds_color(Color.RED)
-            elif dist < self.max_range * 0.5:
+            elif dist < WARN_CM:
                 bot.set_all_leds_color(Color.YELLOW)
             else:
                 bot.set_all_leds_color(Color.GREEN)
         except Exception:
             pass   # never let a cosmetic LED write kill the scan
+
+    def _maybe_beep(self, bot, dist):
+        """Throttled collision beep when an object is inside the danger zone."""
+        if not (MIN_RANGE_CM <= dist <= self.danger):
+            return
+        now = time.time()
+        if now - self._last_beep < BEEP_THROTTLE_S:
+            return
+        self._last_beep = now
+        try:
+            bot.beep(0.05)
+        except Exception:
+            pass
 
     def stop(self):
         self._running = False
@@ -190,6 +284,14 @@ class Radar:
         ppc = radius / self.max_range
         now = time.time()
 
+        # render FPS (exponential moving average)
+        if self._last_render_t is not None:
+            dt = now - self._last_render_t
+            if dt > 0:
+                inst = 1.0 / dt
+                self._fps = inst if self._fps == 0 else 0.9 * self._fps + 0.1 * inst
+        self._last_render_t = now
+
         img = np.full((s, s, 3), C_BG, dtype=np.uint8)
 
         # snapshot shared state under the lock
@@ -197,12 +299,18 @@ class Radar:
             hits = dict(self._hits)
             trail = list(self._trail)
             cur_pan = self._cur_pan
+            read_rate = self._read_rate
+
+        objects = self._objects(hits, now)
+        nearest = min(objects, key=lambda o: o["range"]) if objects else None
 
         self._draw_grid(img, cx, cy, radius, ppc)
         self._draw_trail(img, cx, cy, radius, trail, now)
         self._draw_sweep(img, cx, cy, radius, cur_pan)
-        nearest = self._draw_surface(img, cx, cy, ppc, hits, now)
-        self._draw_hud(img, cur_pan, hits, nearest)
+        self._draw_objects(img, cx, cy, ppc, objects, now)
+        self._draw_nearest_marker(img, nearest)
+        self._draw_hud(img, cur_pan, objects, nearest, read_rate)
+        self._draw_alert(img, nearest)
         return img
 
     def _draw_grid(self, img, cx, cy, radius, ppc):
@@ -267,54 +375,105 @@ class Radar:
             runs.append(cur)
         return runs
 
-    def _draw_surface(self, img, cx, cy, ppc, hits, now):
-        """Draw connected object outlines (with a faint solid fill)."""
-        nearest = None     # (dist, pan, x, y)
+    def _objects(self, hits, now):
+        """Cluster returns into labeled objects with range / bearing / width.
+
+        Each object dict holds:
+          run      — the raw [(pan, dist, t), ...] points
+          range    — closest distance in the cluster (cm)
+          bearing  — distance-weighted mean bearing (deg, + = right)
+          span_deg — angular width (deg)
+          width_cm — approximate physical width (chord length, cm)
+          age      — seconds since the freshest point (for fade)
+        """
+        objects = []
+        for run in self._segment(hits, now):
+            if len(run) < MIN_OBJECT_PTS:
+                continue
+            dists = [d for _, d, _ in run]
+            pans  = [p for p, _, _ in run]
+            rng      = min(dists)
+            bearing  = sum(self._bearing(p) for p in pans) / len(pans)
+            span_deg = (max(pans) - min(pans)) if len(pans) > 1 else 0
+            # chord width: 2 * R * sin(span/2), using the cluster's mean range
+            mean_r   = sum(dists) / len(dists)
+            width_cm = 2.0 * mean_r * math.sin(math.radians(span_deg / 2.0)) \
+                if span_deg > 0 else 0.0
+            age = now - max(t for _, _, t in run)
+            objects.append({
+                "run": run, "range": rng, "bearing": bearing,
+                "span_deg": span_deg, "width_cm": width_cm, "age": age,
+            })
+        # nearest object first → stable O1 = closest labeling
+        objects.sort(key=lambda o: o["range"])
+        return objects
+
+    def _draw_objects(self, img, cx, cy, ppc, objects, now):
+        """Draw connected object outlines (distance-graded) with labels."""
         overlay = img.copy()
 
-        for run in self._segment(hits, now):
+        for idx, obj in enumerate(objects, start=1):
+            run = obj["run"]
             pts = [self._to_xy(cx, cy, ppc, p, d) for p, d, _ in run]
-            age = now - min(t for _, _, t in run)
-            a = max(0.0, 1.0 - age / PERSIST_S)
-
-            for (p, d, _), (x, y) in zip(run, pts):
-                if nearest is None or d < nearest[0]:
-                    nearest = (d, p, x, y)
+            a = max(0.0, 1.0 - obj["age"] / PERSIST_S)
+            col = _dist_color(obj["range"], self.max_range)
 
             if len(pts) >= 2:
                 poly = np.array([(cx, cy)] + pts, dtype=np.int32)
-                cv2.fillPoly(overlay, [poly], tuple(int(c * 0.35) for c in C_BLIP))
+                cv2.fillPoly(overlay, [poly], tuple(int(c * 0.30) for c in col))
                 arr = np.array(pts, dtype=np.int32)
                 cv2.polylines(img, [arr], False,
-                              tuple(int(c * a * 0.5) for c in C_BLIP), 5, cv2.LINE_AA)
+                              tuple(int(c * a * 0.5) for c in col), 5, cv2.LINE_AA)
                 cv2.polylines(img, [arr], False,
-                              tuple(int(c * a) for c in C_BLIP), 2, cv2.LINE_AA)
+                              tuple(int(c * a) for c in col), 2, cv2.LINE_AA)
             else:
                 x, y = pts[0]
-                cv2.circle(img, (x, y), 3, tuple(int(c * a) for c in C_BLIP),
+                cv2.circle(img, (x, y), 3, tuple(int(c * a) for c in col),
                            -1, cv2.LINE_AA)
+
+            # label at the cluster's mid point
+            mx, my = pts[len(pts) // 2]
+            label = f"O{idx} {obj['range']:.0f}cm"
+            if obj["width_cm"] >= 1:
+                label += f" ~{obj['width_cm']:.0f}w"
+            cv2.putText(img, label, (mx + 6, my - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                        tuple(int(c * a) for c in C_TEXTHI), 1, cv2.LINE_AA)
 
         cv2.addWeighted(overlay, 0.35, img, 0.65, 0, img)
 
-        if nearest is not None:
-            _, _, x, y = nearest
-            cv2.line(img, (x - 11, y), (x - 5, y), C_NEAR, 1, cv2.LINE_AA)
-            cv2.line(img, (x + 5, y), (x + 11, y), C_NEAR, 1, cv2.LINE_AA)
-            cv2.line(img, (x, y - 11), (x, y - 5), C_NEAR, 1, cv2.LINE_AA)
-            cv2.line(img, (x, y + 5), (x, y + 11), C_NEAR, 1, cv2.LINE_AA)
-        return nearest
+    def _draw_nearest_marker(self, img, nearest):
+        """Crosshair on the closest point of the nearest object."""
+        if nearest is None:
+            return
+        run = nearest["run"]
+        # closest point in that cluster
+        p, d, _ = min(run, key=lambda h: h[1])
+        s = self.size
+        cx, cy = s // 2, s - int(s * 0.06)
+        radius = int(s * 0.84)
+        ppc = radius / self.max_range
+        x, y = self._to_xy(cx, cy, ppc, p, d)
+        col = C_DANGER if nearest["range"] < self.danger else C_NEAR
+        cv2.line(img, (x - 13, y), (x - 5, y), col, 2, cv2.LINE_AA)
+        cv2.line(img, (x + 5, y), (x + 13, y), col, 2, cv2.LINE_AA)
+        cv2.line(img, (x, y - 13), (x, y - 5), col, 2, cv2.LINE_AA)
+        cv2.line(img, (x, y + 5), (x, y + 13), col, 2, cv2.LINE_AA)
+        cv2.circle(img, (x, y), 16, col, 1, cv2.LINE_AA)
 
-    def _draw_hud(self, img, cur_pan, hits, nearest):
+    def _draw_hud(self, img, cur_pan, objects, nearest, read_rate):
         cv2.putText(img, "ULTRASONIC RADAR", (16, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, C_TEXTHI, 2, cv2.LINE_AA)
         lines = [
             f"bearing : {self._bearing(cur_pan):+d} deg",
             f"range   : 0-{self.max_range} cm",
-            f"returns : {len(hits)}",
+            f"objects : {len(objects)}",
+            f"scan    : {read_rate:4.1f} reads/s   {self._fps:4.1f} fps",
         ]
         if nearest is not None:
-            dist, pan, _, _ = nearest
-            lines.append(f"nearest : {dist:5.1f} cm @ {self._bearing(pan):+d} deg")
+            lines.append(
+                f"nearest : {nearest['range']:5.1f} cm @ "
+                f"{nearest['bearing']:+.0f} deg")
         else:
             lines.append("nearest : --")
         y = 54
@@ -322,6 +481,30 @@ class Radar:
             cv2.putText(img, ln, (16, y), cv2.FONT_HERSHEY_SIMPLEX,
                         0.5, C_TEXT, 1, cv2.LINE_AA)
             y += 22
+
+    def _draw_alert(self, img, nearest):
+        """Bold warning banner when the nearest object is close."""
+        if nearest is None:
+            return
+        rng = nearest["range"]
+        if rng >= WARN_CM:
+            return
+        danger = rng < self.danger
+        col   = C_DANGER if danger else C_WARN
+        text  = "!! COLLISION !!" if danger else "! CAUTION !"
+        s = self.size
+        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 3)
+        x = (s - tw) // 2
+        y = int(s * 0.12)
+        # blink on danger
+        if danger and int(time.time() * 3) % 2 == 0:
+            return
+        cv2.rectangle(img, (x - 16, y - th - 12), (x + tw + 16, y + 12),
+                      (0, 0, 0), -1)
+        cv2.rectangle(img, (x - 16, y - th - 12), (x + tw + 16, y + 12),
+                      col, 2)
+        cv2.putText(img, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 1.0, col, 3,
+                    cv2.LINE_AA)
 
     # ── display backends ─────────────────────────────────────────────────────
 
@@ -425,12 +608,15 @@ def main():
                     help="output image size in pixels (default 720)")
     ap.add_argument("--port", type=int, default=WEB_PORT,
                     help="web server port (default 8001)")
+    ap.add_argument("--danger", type=int, default=DANGER_CM,
+                    help="collision-warning distance in cm (default 30)")
     ap.add_argument("--no-leds", action="store_true",
                     help="don't tint the eye LEDs by proximity")
     args = ap.parse_args()
 
     radar = Radar(arc=args.arc, max_range=args.max, step=args.step,
-                  settle=args.settle, size=args.size, leds=not args.no_leds)
+                  settle=args.settle, size=args.size, leds=not args.no_leds,
+                  danger=args.danger)
 
     scan = radar.scan_demo if args.demo else radar.scan_hardware
     threading.Thread(target=scan, daemon=True).start()
