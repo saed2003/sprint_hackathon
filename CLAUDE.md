@@ -47,7 +47,7 @@ Run all scripts from the **project root** (not from inside subdirectories):
 
 **ICP merge of a full 360 scan (laptop):**
 ```bash
-.venv/bin/python pointcloud/merge_clouds.py --angle 40 captures/scan_<ts>/shot_*/
+.venv/bin/python pointcloud/merge_clouds.py --angle 36 captures/scan_<ts>/shot_*/
 ```
 
 **View a cloud interactively (laptop, Open3D):**
@@ -65,7 +65,7 @@ python3 wasd/drive.py                      # WASD/QE drive, R=scan, T=build, Y=v
 ```bash
 python3 pointcloud/scan360.py captures/scan_<ts>              # measured angle (default)
 python3 pointcloud/scan360.py captures/scan_<ts> --known      # trust timed step
-python3 pointcloud/scan360.py captures/scan_<ts> --angle 40   # force fixed angle
+python3 pointcloud/scan360.py captures/scan_<ts> --angle 36   # force fixed angle
 python3 pointcloud/scan360.py --calibrate --turned <degrees>  # calibrate rotation timing
 ```
 
@@ -115,7 +115,7 @@ A 360 scan is `captures/scan_<ts>/shot_NN/` (each a capture folder) + `merged_36
 |---|---|---|
 | `camera/rs_capture.py` | Pi/laptop | `StereoCapture` — shared D405 pipeline, produces capture folders |
 | `camera/capture.py` | Pi/laptop | ENTER-to-capture REPL |
-| `pointcloud/scan360.py` | Pi | **The heart** — 360 sweep + measured-angle merge (pure NumPy/cv2) |
+| `pointcloud/scan360.py` | Pi | **The heart** — 360 timed sweep + angle-aware merge (pure NumPy/cv2) |
 | `pointcloud/view3d.py` | Pi | Software 3D orbit viewer (numpy+cv2, no Open3D) |
 | `wasd/drive.py` | Pi | **The conductor** — WASD teleop + R/T/Y/V scan workflow |
 | `pointcloud/make_pointcloud.py` | laptop | One capture → `cloud.ply` (Open3D) |
@@ -135,7 +135,7 @@ captures/<ts>/ { depth.npy, ir_left/right.png, intrinsics.txt }
   │     back-project: Z=depth, X=(u-ppx)Z/fx, Y=(v-ppy)Z/fy
   │
   └── scan360.py  (Pi, numpy+cv2)
-        ├── estimate_yaw(): ORB features → essential matrix → yaw per step
+        ├── estimate_yaw(): ORB → homography → yaw (merge-only, when no angle.txt)
         ├── back_project(): depth.npy → 3D points
         ├── ry(angle): rotate each view about Y (vertical) into view-0 frame
         ├── voxel_downsample(): 1 cm voxel grid
@@ -144,7 +144,13 @@ captures/<ts>/ { depth.npy, ir_left/right.png, intrinsics.txt }
 
 ### Open-loop rotation (important)
 
-The RasBot has **no IMU or wheel encoders**. Rotation is timed. `scan360.py` measures actual rotation from overlapping IR images (ORB → essential matrix → yaw) and falls back to the nominal 40° step only when it can't. Calibrate `SCAN_SEC_PER_DEG` in `scan360.py` once per robot/floor to keep steps near 40° for enough image overlap.
+The RasBot has **no IMU or wheel encoders**, so rotation is **purely timed** — the camera is **not** used to steer. `scan360.py` pulses the motors for `SCAN_SEC_PER_DEG * step` between shots (default 10 shots → 36° each). Calibrate `SCAN_SEC_PER_DEG` once per robot/floor so a full turn lands on start: `python3 pointcloud/scan360.py --calibrate --turned <deg>` (battery level and floor grip shift it).
+
+After the last shot it returns to the start heading (`SCAN_RETURN_HOME`); `SCAN_RETURN_MODE` selects how:
+- `"forward"` — one more step to finish the 360° circle (short; only lands on start if `SCAN_SEC_PER_DEG` is dialed in).
+- `"rewind"` — spin back the exact `shots-1` steps just made (lands on start regardless of calibration, but turns ~324° backward).
+
+Image-based angle recovery (`estimate_yaw`, ORB → homography → yaw) still exists but **only in the merge** (`build_from_session`), to reconstruct per-step angles when a scan folder has no `angle.txt`.
 
 ### RasBot API key methods
 

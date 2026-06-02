@@ -1,37 +1,18 @@
 """
-On-the-Pi 360-degree scan: rotate in place, capture N views (default 10 -> 36 deg each),
-and merge them into ONE point cloud — entirely with numpy + OpenCV (NO Open3D, which has
-no Raspberry Pi wheel). Everything runs on the robot; press R in drive.py to capture, T
-to build.
+On-the-Pi 360 scan: rotate in place, capture SCAN_SHOTS views, and merge them into one
+point cloud with numpy + OpenCV (no Open3D on the Pi). Press R in drive.py to capture,
+T to build.
 
-How rotation + the merge work (the fix for "the bot turns too far"):
-  The RasBot has no IMU/encoders, so we rotate by CALIBRATED TIMING: one motor pulse of
-  SCAN_SEC_PER_DEG * 36 deg between each shot, 9 pulses for a 10-shot turn (~324 deg of
-  rotation = a full 360 deg of coverage). Each shot records its nominal angle (0, 36, 72,
-  ...) to shot_NN/angle.txt and the merge rotates each view by exactly that
-  (back-projection: X=(u-ppx)Z/fx, Y=(v-ppy)Z/fy, Z=depth). Calibrate ONCE so 9 pulses
-  land near 324 deg total: `python3 pointcloud/scan360.py --calibrate --turned <measured>`.
+Rotation is by CALIBRATED TIMING (the RasBot has no IMU/encoders): one motor pulse of
+SCAN_SEC_PER_DEG * step between shots, shots-1 pulses for ~360 deg of coverage. Each shot
+records its angle to shot_NN/angle.txt and the merge rotates each view by that.
 
-  There is also a VISION closed-loop (SCAN_CLOSED_LOOP / rotate_by_vision): pulse a bit,
-  measure the turn from overlapping IR images (ORB -> homography -> yaw), stop at ~36 deg.
-  It is OFF by default because at a 36 deg step the two IR images barely overlap, so the
-  homography under-measures the yaw (it read ~20 deg when the bot really turned ~90); the
-  loop then kept pulsing to its time budget and the bot spun ~2x too far (~820 deg for a
-  360 scan), and the wrong recorded angles also skewed the merge. Calibrated timing is the
-  reliable choice on this encoder-less chassis. Set SCAN_CLOSED_LOOP=True to try vision.
-
-  For a still-cleaner result, copy the raw shots to a laptop and run merge_clouds.py (ICP).
-
-Standalone uses (no robot needed — rebuild from shots already captured):
-  python3 pointcloud/scan360.py captures/scan_20260531_1700              # rebuild, MEASURED angle
-  python3 pointcloud/scan360.py captures/scan_20260531_1700 --known      # trust the timed step
-  python3 pointcloud/scan360.py captures/scan_20260531_1700 --angle 36   # force a fixed step angle
-  python3 pointcloud/scan360.py captures/scan_20260531_1700 --dir -1     # flip rotation sign
-
-Calibrate the rotation so each step lands near its nominal angle (do this once, on the
-bot — it pulses EXACTLY like a scan, not one long spin, so the timing actually transfers):
-  python3 pointcloud/scan360.py --calibrate                 # 8 scan-like pulses; measure total deg
-  python3 pointcloud/scan360.py --calibrate --turned 470    # auto-prints the SCAN_SEC_PER_DEG to set
+Standalone (rebuild from already-captured shots, no robot):
+  python3 pointcloud/scan360.py <session_dir>            # rebuild (measured angle)
+  python3 pointcloud/scan360.py <session_dir> --known    # trust the timed step
+  python3 pointcloud/scan360.py <session_dir> --angle 36 # force a fixed step angle
+  python3 pointcloud/scan360.py <session_dir> --dir -1   # flip rotation sign
+  python3 pointcloud/scan360.py --calibrate --turned <deg>   # print SCAN_SEC_PER_DEG to set
 """
 
 import os
@@ -43,59 +24,34 @@ import math
 import numpy as np
 import cv2
 
-# project root = the folder that contains pointcloud/, camera/, rasbot/, ...
+# project root = the folder that holds pointcloud/, camera/, rasbot/, ...
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from camera.rs_capture import StereoCapture, default_out_root
+from camera.rs_capture import default_out_root
 
-# ── scan tunables ───────────────────────────────────────────────────────────────
-SCAN_SHOTS        = 10       # views per full turn: 10 -> 36 deg each (9->40, 8->45)
-SCAN_ROTATE_SPEED = 40       # motor speed used while rotating
-# <<< CALIBRATE (pulsed): seconds of rotate-pulse per DEGREE, measured the way the scan
-# actually moves (short start/stop pulses), NOT from one long continuous spin. This ONE knob
-# sets how far the bot turns per step; with SCAN_RETURN_MODE="forward" the FULL turn (10 steps)
-# must total 360 deg for the bot to come back to start. Dialed in on the real bot: 2.71/360
-# lands it on the start heading (earlier guesses 2.5-2.6 under-shot; battery/floor grip shift it).
-# Re-tune from ONE full run by how far the bot ends from start:
-#   undershoots by d deg: new = old * 360/(360 - d);  overshoots by d: new = old * 360/(360 + d).
-# (Not needed if SCAN_RETURN_MODE="rewind" -- that lands on start regardless of this value.)
+# ── scan tunables ────────────────────────────────────────────────────────────────
+SCAN_SHOTS        = 10       # views per turn: 10 -> 36 deg each
+SCAN_ROTATE_SPEED = 40       # motor speed while rotating
+# Calibrated seconds of rotate-pulse per DEGREE (pulsed, not one long spin). With
+# SCAN_RETURN_MODE="forward" the full 10-step turn must total 360 deg to land back on start.
+# Re-tune from one run: undershoots by d deg -> new = old*360/(360-d); overshoots -> 360/(360+d).
 SCAN_SEC_PER_DEG  = 2.73 / 360.0
-SCAN_SETTLE_PAUSE = 0.4      # seconds to let the chassis stop shaking before a shot
+SCAN_SETTLE_PAUSE = 0.4      # seconds to let the chassis settle before a shot
 SCAN_BRAKE_TAP    = 0.0      # seconds of reverse pulse after each step to kill coast (0=off)
-SCAN_DIR          = 1        # +1 = rotate CCW (rotate_left); -1 = CW. Merge follows this.
-SCAN_RETURN_HOME  = True     # after the last shot, rotate back to the starting heading (no
-                             #   photo). Set False to leave the bot wherever the scan ends.
-SCAN_RETURN_MODE  = "forward"  # HOW it returns home (only when SCAN_RETURN_HOME):
-                             #   "forward" = one more 36 deg step to finish the 360 deg circle
-                             #     (short, but only lands on start if SCAN_SEC_PER_DEG is dialed in);
-                             #   "rewind"  = spin back the exact 9 steps it just made, so it lands
-                             #     on start regardless of calibration (but turns ~324 deg backward).
-                             #   Flip this to "rewind" to try the backtrack, "forward" to revert.
+SCAN_DIR          = 1        # +1 = CCW (rotate_left); -1 = CW. Merge follows this.
+SCAN_RETURN_HOME  = True     # after the last shot, rotate back to start (no photo)
+SCAN_RETURN_MODE  = "forward"  # "forward" = one more step to finish the 360 circle (needs
+                             #   SCAN_SEC_PER_DEG calibrated); "rewind" = spin back the exact
+                             #   steps just made (lands on start regardless, ~324 deg backward).
 
-# ── visual closed-loop rotation (stop when the CAMERA says ~step) ──
-# OFF by default: at a 36 deg step the IR images barely overlap, so the homography
-# UNDER-measures the yaw and the loop over-rotates (~820 deg for a 360 scan). Calibrated
-# timing (closed_loop=False) is reliable on this encoder-less bot. See the module docstring.
-SCAN_CLOSED_LOOP   = False   # rotate by vision (True) instead of calibrated timing (False)
-SCAN_MIN_PULSE_DEG = 5       # smallest rotation pulse (enough to beat motor stiction)
-SCAN_MAX_PULSE_DEG = 15      # largest single pulse (used early; pulses shrink near target)
-SCAN_ANGLE_TOL     = 2       # stop once within this many deg of the target step
-SCAN_STEP_BUDGET   = 1.25    # HARD cap on rotation per step = SCAN_STEP_BUDGET x target, so
-                             #   a bad vision reading can't make one step spin past ~1.25x.
-SCAN_YAW_GAIN      = 1.0     # correct a SYSTEMATIC vision bias: raise above 1.0 if the robot
-                             #   consistently OVER-rotates, lower below 1.0 if it UNDER-rotates.
+# ── cloud tunables ───────────────────────────────────────────────────────────────
+VOXEL = 0.01                 # final resolution (m)
+ZMIN, ZMAX = 0.1, 1.5        # keep depth in the D405's good range (m); past ~1.5 m is noise
+MIN_NEIGHBORS = 4            # outlier filter: drop points with < this many filled neighbour cells
 
-# ── cloud tunables ──────────────────────────────────────────────────────────────
-VOXEL = 0.01                 # 1 cm final resolution
-ZMIN, ZMAX = 0.1, 1.5        # keep points in the D405's GOOD range (meters). The D405 is
-                             # short-range passive stereo: depth past ~1.5 m is mostly noise,
-                             # so we drop it (raise ZMAX for a big room, lower it for cleaner).
-MIN_NEIGHBORS = 4            # outlier filter: keep a point only if >= this many of its 26
-                             # neighbour voxel cells are also filled (0 disables). Kills flyers.
-
-# ── visual angle-measurement tunables (Track B: don't trust the timer) ───────────
-MEASURE_MIN_INLIERS = 20     # need at least this many homography inliers to trust a step
-MEASURE_LO          = 0.5    # accept a measured step only if it is within
-MEASURE_HI          = 1.8    #   [LO, HI] x the nominal step (else fall back to nominal)
+# ── angle-measurement tunables (merge: recover step yaw from IR images) ───────────
+MEASURE_MIN_INLIERS = 20     # need >= this many homography inliers to trust a measured step
+MEASURE_LO          = 0.5    # accept a measured step only within
+MEASURE_HI          = 1.8    #   [LO, HI] x the nominal step
 
 
 # ── point-cloud math (pure numpy) ────────────────────────────────────────────────
@@ -119,8 +75,7 @@ def intrinsics_K(folder):
 
 
 def read_angle(folder):
-    """Cumulative turn angle (deg magnitude) the closed-loop scan recorded for a shot,
-    or None if the shot predates it (then the merge measures/assumes the angle)."""
+    """Recorded turn angle (deg magnitude) for a shot from angle.txt, or None."""
     p = os.path.join(folder, "angle.txt")
     if not os.path.exists(p):
         return None
@@ -132,19 +87,8 @@ def read_angle(folder):
 
 
 def yaw_from_images(a, b, K):
-    """Yaw (deg, about the vertical axis) between two grayscale IR images.
-
-    We model the robot's in-place spin as a (near) pure camera rotation, for which
-    matched points are related by a HOMOGRAPHY  H = K R K^-1. So: ORB features matched
-    with Lowe's ratio test -> RANSAC homography -> R = K^-1 H K -> read the yaw.
-
-    Why not the essential matrix (the old way)? It needs camera TRANSLATION and
-    degenerates for in-place rotation, so almost no inliers survived (the "7-20 inliers
-    rejected" you saw). The homography is the correct, robust model here.
-
-    Returns (yaw_deg or None, n_inliers). yaw is signed; callers use its magnitude and
-    apply the known rotation direction. None means "couldn't measure" (fall back).
-    """
+    """Yaw (deg, about vertical) between two grayscale IR images: ORB matches -> RANSAC
+    homography H = K R K^-1 -> R -> yaw. Returns (yaw_deg or None, n_inliers)."""
     if a is None or b is None:
         return None, 0
 
@@ -154,7 +98,6 @@ def yaw_from_images(a, b, K):
     if da is None or db is None or len(ka) < 12 or len(kb) < 12:
         return None, 0
 
-    # Lowe ratio test keeps many more good matches than crossCheck
     bf = cv2.BFMatcher(cv2.NORM_HAMMING)
     good = [m for m, n in bf.knnMatch(da, db, k=2) if m.distance < 0.75 * n.distance]
     if len(good) < 12:
@@ -167,8 +110,7 @@ def yaw_from_images(a, b, K):
         return None, 0
     inliers = int(mask.sum())
 
-    # H = K R K^-1  ->  R ~ K^-1 H K ; snap to the nearest rotation (SVD) and read the yaw
-    # in the same convention as ry(): R[0,0]=cos, R[0,2]=sin.
+    # R ~ K^-1 H K, snapped to the nearest rotation (SVD); yaw read as R[0,0]=cos, R[0,2]=sin
     R = np.linalg.inv(K) @ H @ K
     U, _, Vt = np.linalg.svd(R)
     R = U @ Vt
@@ -179,9 +121,7 @@ def yaw_from_images(a, b, K):
 
 
 def estimate_yaw(folder_a, folder_b, K):
-    """Shot-to-shot yaw: load the two folders' left-IR images and measure their
-    relative rotation (see yaw_from_images). Used by the merge as a fallback when a
-    shot has no recorded closed-loop angle."""
+    """Per-step yaw from two folders' left-IR images (see yaw_from_images)."""
     a = cv2.imread(os.path.join(folder_a, "ir_left.png"), cv2.IMREAD_GRAYSCALE)
     b = cv2.imread(os.path.join(folder_b, "ir_left.png"), cv2.IMREAD_GRAYSCALE)
     return yaw_from_images(a, b, K)
@@ -225,19 +165,15 @@ def voxel_downsample(pts, cols, voxel):
 
 
 def remove_isolated(pts, cols, voxel, min_neighbors=MIN_NEIGHBORS):
-    """Drop lone specks: keep a point only if >= min_neighbors of its 26 neighbouring
-    voxel cells are also occupied. A pure-numpy stand-in for Open3D's statistical
-    outlier removal (the laptop merge_clouds.py uses Open3D; the Pi has only numpy).
-
-    Call after voxel_downsample so each occupied cell holds exactly one point.
-    """
+    """Drop lone specks: keep a point only if >= min_neighbors of its 26 neighbouring voxel
+    cells are occupied (a numpy stand-in for Open3D outlier removal). Call after downsample."""
     if len(pts) == 0 or min_neighbors <= 0:
         return pts, cols
     k = np.floor(pts / voxel).astype(np.int64)
     k = k - k.min(axis=0) + 1                      # shift into [1, max+1] (no negatives)
     dimx = int(k[:, 0].max()) + 3                  # pad so neighbours stay in [0, dim)
     dimy = int(k[:, 1].max()) + 3
-    cell_hash = lambda a: a[:, 0] + a[:, 1] * dimx + a[:, 2] * dimx * dimy  # collision-free
+    cell_hash = lambda a: a[:, 0] + a[:, 1] * dimx + a[:, 2] * dimx * dimy
     occupied = np.unique(cell_hash(k))
     counts = np.zeros(len(pts), np.int32)
     for dx in (-1, 0, 1):
@@ -278,27 +214,21 @@ def shot_dirs(session_dir):
 
 
 def cumulative_angles(dirs, nominal_step, measure=True, log=print):
-    """Angle (deg, about vertical) to rotate each view into view-0's frame.
+    """Angle (deg) to rotate each view into view-0's frame.
 
-    Known-angle mode (measure=False) just returns 0, step, 2*step, ... — the timer is
-    trusted. Measured mode (the default) reads the TRUE per-step yaw from each pair of
-    overlapping IR images (see estimate_yaw) and uses that, so the cloud is correct even
-    when the open-loop rotation overshoots. We trust the camera for the step MAGNITUDE and
-    keep the known turn direction (sign of nominal_step); anything outside a sane band, or
-    with too few inliers, falls back to the nominal step.
+    measure=False: trust the timer (0, step, 2*step, ...). measure=True: use the recorded
+    angles if every shot has one, else measure per-step yaw from the IR images and fall back
+    to the nominal step when a reading is missing or out of the [MEASURE_LO, MEASURE_HI] band.
     """
     n = len(dirs)
     if n < 2:
         return [0.0] * n
 
-    # closed-loop recorded angles win when present — they ARE the measured truth, so the
-    # merge needs no image re-measurement and the rebuild is reproducible.
     if measure:
         recorded = [read_angle(d) for d in dirs]
         if all(a is not None for a in recorded):
             sign = math.copysign(1.0, nominal_step)
-            log("  using closed-loop recorded angles: "
-                + ", ".join(f"{a:.0f}" for a in recorded) + " deg")
+            log("  using recorded angles: " + ", ".join(f"{a:.0f}" for a in recorded) + " deg")
             return [sign * a for a in recorded]
 
     if not measure:
@@ -329,9 +259,9 @@ def build_from_session(session_dir, step_angle=None, direction=SCAN_DIR,
                        voxel=VOXEL, measure=True, save_shots=True, log=print):
     """Merge all shots in a session into <session>/merged_360.ply.
 
-    measure=True (default): use the camera-measured per-step yaw (robust to bad timing).
-    measure=False or step_angle given: trust the known/timed step angle.
-    save_shots=True: also write each photo's own point cloud to shot_NN/cloud.ply.
+    measure=True: use the per-step yaw (recorded angles, else image-measured). measure=False
+    or an explicit step_angle trusts the known/timed step. save_shots also writes each photo's
+    own cloud to shot_NN/cloud.ply.
     """
     dirs = shot_dirs(session_dir)
     if not dirs:
@@ -341,15 +271,13 @@ def build_from_session(session_dir, step_angle=None, direction=SCAN_DIR,
         step_angle = 360.0 / len(dirs)
     nominal_step = direction * step_angle
 
-    # an explicit --angle forces the known-angle path; otherwise measure by default
     angles = cumulative_angles(dirs, nominal_step, measure=measure and not forced, log=log)
 
     all_pts, all_cols = [], []
     for d, ang in zip(dirs, angles):
         pts, cols = back_project(d)
         if save_shots:
-            # the per-photo point cloud, in this shot's own camera frame
-            write_ply(os.path.join(d, "cloud.ply"), pts, cols)
+            write_ply(os.path.join(d, "cloud.ply"), pts, cols)   # per-photo cloud, own frame
         pts = pts @ ry(ang).T          # rotate this view into view-0's frame
         all_pts.append(pts)
         all_cols.append(cols)
@@ -365,13 +293,13 @@ def build_from_session(session_dir, step_angle=None, direction=SCAN_DIR,
     if forced or not measure:
         mode = "known-angle"
     elif all(read_angle(d) is not None for d in dirs):
-        mode = "closed-loop angle"
+        mode = "recorded angle"
     else:
         mode = "image-measured angle"
     log(f"  merged {len(dirs)} views ({mode}, swept {angles[-1]:.0f} deg) -> "
         f"{len(pts)} points (cleaned {before - len(pts)} flyers) -> {out}")
 
-    # also save a still preview image of the cloud (headless — works with no display)
+    # still preview of the cloud (headless — works with no display)
     try:
         from pointcloud import view3d
         prev = view3d.save_view(out, os.path.join(session_dir, "merged_360_preview.png"))
@@ -382,11 +310,11 @@ def build_from_session(session_dir, step_angle=None, direction=SCAN_DIR,
     return out
 
 
-# ── robot sweep ──────────────────────────────────────────────────────────────────
+# ── robot sweep ────────────────────────────────────────────────────────────────────
 
 def _rotate_step(bot, speed, secs, direction=SCAN_DIR, brake_tap=SCAN_BRAKE_TAP):
-    """One timed rotation pulse. direction +1 = CCW (rotate_left), -1 = CW.
-    An optional brake_tap drives the wheels the other way briefly to cancel coast."""
+    """One timed rotation pulse (+1 = CCW/rotate_left, -1 = CW). Optional brake_tap drives
+    the wheels the other way briefly to cancel coast."""
     spin = bot.rotate_left if direction >= 0 else bot.rotate_right
     brake = bot.rotate_right if direction >= 0 else bot.rotate_left
     spin(speed)
@@ -397,75 +325,15 @@ def _rotate_step(bot, speed, secs, direction=SCAN_DIR, brake_tap=SCAN_BRAKE_TAP)
     bot.stop()
 
 
-def _K_from_cam(cam):
-    """3x3 camera matrix from the live D405 intrinsics (valid after cam.start())."""
-    return np.array([[cam.intr.fx, 0, cam.intr.ppx],
-                     [0, cam.intr.fy, cam.intr.ppy],
-                     [0, 0, 1]], dtype=np.float64)
-
-
-def rotate_by_vision(bot, cam, target_deg, K, direction=SCAN_DIR,
-                     rotate_speed=SCAN_ROTATE_SPEED, sec_per_deg=SCAN_SEC_PER_DEG,
-                     min_pulse=SCAN_MIN_PULSE_DEG, max_pulse=SCAN_MAX_PULSE_DEG,
-                     tol=SCAN_ANGLE_TOL, budget=SCAN_STEP_BUDGET, gain=SCAN_YAW_GAIN,
-                     brake_tap=SCAN_BRAKE_TAP, settle=0.2, log=print):
-    """Rotate in pulses until the CAMERA says we have turned ~target_deg about the vertical
-    axis (measure cumulative yaw vs the pre-rotation frame). Returns the achieved yaw (deg).
-
-    Anti-overshoot, in three layers:
-      * pulses SHRINK as we approach the target (each is sized to the remaining angle), so
-        the last pulse barely overshoots instead of a fixed big jump;
-      * a HARD per-step time budget (budget x target) ends the step even if vision keeps
-        reading low, so one bad step can never spin past ~budget x the target;
-      * an optional brake_tap drives the wheels back briefly to cancel coast.
-    `gain` corrects a systematic vision bias. A failed/absurd read dead-reckons from the timer.
-    """
-    spin  = bot.rotate_left  if direction >= 0 else bot.rotate_right
-    brake = bot.rotate_right if direction >= 0 else bot.rotate_left
-    ref = cam.grab_ir()                              # the view before this step's rotation
-    achieved = 0.0
-    spent = 0.0
-    max_spin = sec_per_deg * target_deg * budget     # hard cap on total spin TIME per step
-    for _ in range(30):                              # final safety bound on iterations
-        if achieved >= target_deg - tol or spent >= max_spin:
-            break
-        pulse_deg = max(min_pulse, min(max_pulse, target_deg - achieved))   # shrink near target
-        pulse_time = sec_per_deg * pulse_deg
-        spin(rotate_speed)
-        time.sleep(pulse_time)
-        if brake_tap > 0:
-            bot.stop(); brake(rotate_speed); time.sleep(brake_tap)
-        bot.stop()
-        spent += pulse_time
-        time.sleep(settle)                           # let it stop shaking before measuring
-        yaw, inliers = yaw_from_images(ref, cam.grab_ir(), K)
-        if yaw is not None and inliers >= MEASURE_MIN_INLIERS and abs(yaw) <= target_deg * 1.6:
-            achieved = abs(yaw) * gain               # absolute angle from the reference frame
-        else:
-            achieved += pulse_deg                    # vision failed/absurd -> dead-reckon
-    bot.stop()
-    log(f"    turned ~{achieved:.0f} deg (target {target_deg:.0f})"
-        + ("  [time-capped]" if spent >= max_spin else ""))
-    return achieved
-
-
 def run_scan(bot, cam, shots=SCAN_SHOTS, rotate_speed=SCAN_ROTATE_SPEED,
              sec_per_deg=SCAN_SEC_PER_DEG, settle_pause=SCAN_SETTLE_PAUSE,
-             brake_tap=SCAN_BRAKE_TAP, direction=SCAN_DIR,
-             closed_loop=SCAN_CLOSED_LOOP, return_home=SCAN_RETURN_HOME,
+             brake_tap=SCAN_BRAKE_TAP, direction=SCAN_DIR, return_home=SCAN_RETURN_HOME,
              return_mode=SCAN_RETURN_MODE, out_root=None, log=print):
-    """Rotate in place and capture `shots` views. Returns the session folder.
+    """Rotate in place and capture `shots` views (timed open-loop). Returns the session dir.
 
-    closed_loop=False (default): blind, calibrated timed pulses (no camera used to steer).
-    closed_loop=True: each step rotates by VISION (rotate_by_vision) until the camera
-    reports ~360/shots deg, and the achieved angle is written to each shot's angle.txt.
-
-    return_home=True (default): after the last shot, rotate back to the starting heading
-    (no photo, no extra shot folder, not merged). return_mode picks how:
-      "forward" - one more 36 deg step to finish the full 360 deg circle (short; lands on
-                  start only if sec_per_deg is calibrated so 10 steps total 360 deg);
-      "rewind"  - spin back the exact shots-1 steps just made, so it lands on start
-                  regardless of calibration, at the cost of turning ~324 deg backward.
+    return_home=True: after the last shot, rotate back to the starting heading (no photo, no
+    extra shot folder, not merged). return_mode "forward" = one more step to complete the 360
+    circle; "rewind" = spin back the exact shots-1 steps just made.
     """
     out_root = out_root or default_out_root()
     session = os.path.join(out_root, "scan_" + time.strftime("%Y%m%d_%H%M%S"))
@@ -477,10 +345,8 @@ def run_scan(bot, cam, shots=SCAN_SHOTS, rotate_speed=SCAN_ROTATE_SPEED,
         cam.start()
         log(cam.info())
 
-    K = _K_from_cam(cam)
-    log(f"360 scan: {shots} shots, {step_angle:.0f} deg each "
-        f"({'vision closed-loop' if closed_loop else 'timed open-loop'} rotation)")
-    cumulative = 0.0                              # achieved turn so far (deg, from shot 0)
+    log(f"360 scan: {shots} shots, {step_angle:.0f} deg each (timed open-loop)")
+    cumulative = 0.0                              # turn so far (deg, from shot 0)
     for i in range(shots):
         bot.stop()
         time.sleep(settle_pause)                 # let the chassis settle (less blur)
@@ -492,67 +358,50 @@ def run_scan(bot, cam, shots=SCAN_SHOTS, rotate_speed=SCAN_ROTATE_SPEED,
             + ("" if ok else "  (FRAME DROPPED)"))
         bot.beep(0.05)
         if i < shots - 1:
-            if closed_loop:
-                turned = rotate_by_vision(bot, cam, step_angle, K, direction=direction,
-                                          rotate_speed=rotate_speed, sec_per_deg=sec_per_deg,
-                                          brake_tap=brake_tap, log=log)
-            else:
-                _rotate_step(bot, rotate_speed, sec_per_deg * step_angle, direction, brake_tap)
-                turned = step_angle
-            cumulative += turned
+            _rotate_step(bot, rotate_speed, sec_per_deg * step_angle, direction, brake_tap)
+            cumulative += step_angle
 
-    # return to the starting heading (no photo, no shot folder, not merged).
+    # return to the starting heading (no photo, no shot folder, not merged)
     if return_home and shots > 1:
         if return_mode == "rewind":
-            # undo the exact rotations just made: shots-1 identical pulses in the OPPOSITE
-            # direction, each preceded by a stop+settle so it mirrors a forward step. This
+            # undo the exact rotations just made: shots-1 identical pulses in reverse, so it
             # lands on start regardless of how sec_per_deg is calibrated.
-            log(f"  returning to start: rewinding the {shots - 1} steps it just made (no photo)")
+            log(f"  returning to start: rewinding the {shots - 1} steps it made (no photo)")
             for _ in range(shots - 1):
                 bot.stop()
                 time.sleep(settle_pause)
-                if closed_loop:
-                    rotate_by_vision(bot, cam, step_angle, K, direction=-direction,
-                                     rotate_speed=rotate_speed, sec_per_deg=sec_per_deg,
-                                     brake_tap=brake_tap, log=log)
-                else:
-                    _rotate_step(bot, rotate_speed, sec_per_deg * step_angle, -direction, brake_tap)
+                _rotate_step(bot, rotate_speed, sec_per_deg * step_angle, -direction, brake_tap)
                 cumulative -= step_angle
         else:
-            # "forward": one more identical step to complete the full 360 deg circle.
-            log("  returning to start: one more 36 deg step forward (no photo)")
-            if closed_loop:
-                rotate_by_vision(bot, cam, step_angle, K, direction=direction,
-                                 rotate_speed=rotate_speed, sec_per_deg=sec_per_deg,
-                                 brake_tap=brake_tap, log=log)
-            else:
-                _rotate_step(bot, rotate_speed, sec_per_deg * step_angle, direction, brake_tap)
+            # "forward": one more step to complete the full 360 deg circle.
+            log("  returning to start: one more step forward (no photo)")
+            _rotate_step(bot, rotate_speed, sec_per_deg * step_angle, direction, brake_tap)
             cumulative += step_angle
 
     bot.stop()
     homed = ("" if not (return_home and shots > 1)
-             else ", then rewound back to start" if return_mode == "rewind"
-             else ", then stepped forward to start (~360 deg full turn)")
+             else ", then rewound to start" if return_mode == "rewind"
+             else ", then stepped forward to start (full 360 turn)")
     log(f"  scan complete: {shots} shots over ~{step_angle * (shots - 1):.0f} deg" + homed)
     return session
 
 
 def scan_and_build(bot, cam, log=print, shots=SCAN_SHOTS, measure=True, **kw):
-    """Full pipeline: sweep, then build the 360 cloud (measured angle) — all on the Pi."""
+    """Full pipeline: sweep, then build the 360 cloud — all on the Pi."""
     session = run_scan(bot, cam, shots=shots, log=log, **kw)
     ply = build_from_session(session, measure=measure, log=log)
     return session, ply
 
 
-# ── standalone CLI ────────────────────────────────────────────────────────────────
+# ── standalone CLI ──────────────────────────────────────────────────────────────────
 
 def _calibrate(shots, speed, sec_per_deg, settle, brake_tap, turned=None):
-    """Pulsed calibration: pulse-rotate EXACTLY like a scan, so the measured time->angle
-    ratio is valid for the real (start/stop) motion — not a single continuous spin."""
+    """Pulse-rotate EXACTLY like a scan (shots-1 start/stop pulses) so the time->angle ratio
+    transfers to the real motion. Measure the total degrees turned to set SCAN_SEC_PER_DEG."""
     from setup_and_api.api import RasBot
     step_angle = 360.0 / shots
     step_time  = sec_per_deg * step_angle
-    pulses     = shots - 1                       # a scan rotates shots-1 times
+    pulses     = shots - 1
     total_drive = pulses * step_time
     print(f"Pulsed calibration: {pulses} identical {step_time:.2f}s pulses at speed {speed}")
     print(f"(this is exactly how a {shots}-shot scan moves between shots, minus the camera).")
