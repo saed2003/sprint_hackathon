@@ -61,6 +61,8 @@ SCAN_SEC_PER_DEG  = 2.6 / 360.0
 SCAN_SETTLE_PAUSE = 0.4      # seconds to let the chassis stop shaking before a shot
 SCAN_BRAKE_TAP    = 0.0      # seconds of reverse pulse after each step to kill coast (0=off)
 SCAN_DIR          = 1        # +1 = rotate CCW (rotate_left); -1 = CW. Merge follows this.
+SCAN_RETURN_HOME  = True     # after the last shot, do ONE more step (no photo) to close the
+                             #   circle and bring the bot back to its starting heading.
 
 # ── visual closed-loop rotation (stop when the CAMERA says ~step) ──
 # OFF by default: at a 36 deg step the IR images barely overlap, so the homography
@@ -443,12 +445,17 @@ def rotate_by_vision(bot, cam, target_deg, K, direction=SCAN_DIR,
 def run_scan(bot, cam, shots=SCAN_SHOTS, rotate_speed=SCAN_ROTATE_SPEED,
              sec_per_deg=SCAN_SEC_PER_DEG, settle_pause=SCAN_SETTLE_PAUSE,
              brake_tap=SCAN_BRAKE_TAP, direction=SCAN_DIR,
-             closed_loop=SCAN_CLOSED_LOOP, out_root=None, log=print):
+             closed_loop=SCAN_CLOSED_LOOP, return_home=SCAN_RETURN_HOME,
+             out_root=None, log=print):
     """Rotate in place and capture `shots` views. Returns the session folder.
 
-    closed_loop=True (default): each step rotates by VISION (rotate_by_vision) until the
-    camera reports ~360/shots deg, and the achieved angle is written to each shot's
-    angle.txt so the merge uses the true angle. closed_loop=False: blind timed pulses.
+    closed_loop=False (default): blind, calibrated timed pulses (no camera used to steer).
+    closed_loop=True: each step rotates by VISION (rotate_by_vision) until the camera
+    reports ~360/shots deg, and the achieved angle is written to each shot's angle.txt.
+
+    return_home=True (default): after the last shot, do ONE more identical rotation step
+    (no photo) so the 10 shots over 0..324 deg are followed by a final 36 deg turn that
+    completes the full 360 deg circle and leaves the bot back on its starting heading.
     """
     out_root = out_root or default_out_root()
     session = os.path.join(out_root, "scan_" + time.strftime("%Y%m%d_%H%M%S"))
@@ -483,9 +490,24 @@ def run_scan(bot, cam, shots=SCAN_SHOTS, rotate_speed=SCAN_ROTATE_SPEED,
                 _rotate_step(bot, rotate_speed, sec_per_deg * step_angle, direction, brake_tap)
                 turned = step_angle
             cumulative += turned
+
+    # close the circle: one more identical rotation (no photo, no shot folder, not merged)
+    # so the bot ends on its starting heading. The 10 shots sit 36 deg apart over 0..324 deg;
+    # this final step adds the last 36 deg to make a full 360 deg turn.
+    if return_home and shots > 1:
+        log("  returning to start heading (one more step, no photo)")
+        if closed_loop:
+            rotate_by_vision(bot, cam, step_angle, K, direction=direction,
+                             rotate_speed=rotate_speed, sec_per_deg=sec_per_deg,
+                             brake_tap=brake_tap, log=log)
+        else:
+            _rotate_step(bot, rotate_speed, sec_per_deg * step_angle, direction, brake_tap)
+        cumulative += step_angle
+
     bot.stop()
-    log(f"  scan complete: {shots} shots, total rotation ~{cumulative:.0f} deg "
-        f"(expected ~{step_angle * (shots - 1):.0f} for {shots} shots)")
+    log(f"  scan complete: {shots} shots over ~{step_angle * (shots - 1):.0f} deg"
+        + (f", then returned to start (~{cumulative:.0f} deg full turn)"
+           if return_home and shots > 1 else ""))
     return session
 
 
