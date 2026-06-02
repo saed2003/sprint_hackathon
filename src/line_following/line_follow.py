@@ -326,7 +326,7 @@ def do_scan(bot, cam, log):
 
 # ── main loop ─────────────────────────────────────────────────────────────────
 
-def run(bot, cam=None, log=_log):
+def run(bot, cam=None, log=_log, stop_event=None):
     log("Line-following started (PID). Ctrl-C to stop.")
     log(f"BASE={BASE_SPEED}  KP_S={KP_SMALL}  KP_L={KP_LARGE}  KD={KD}  SKIP_SCAN={SKIP_SCAN}")
 
@@ -349,6 +349,8 @@ def run(bot, cam=None, log=_log):
 
     try:
         while True:
+            if stop_event is not None and stop_event.is_set():
+                break
             lo, li, ri, ro, all_on, all_off = read_sensors(bot)
             now   = time.time()
             error = sensor_error(lo, li, ri, ro)
