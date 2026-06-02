@@ -43,10 +43,12 @@ DRIVE_SPEED_MAX = 255
 # (covers a browser tab closing or the network dropping mid-drive).
 DRIVE_WATCHDOG_S = 0.6
 
-# held key -> translation contribution (vx: right +, vy: forward +).
-# Mirrors src/wasd/drive.py so the HTML drives exactly like the pygame version.
-_TRANS = {'w': (0, 1), 's': (0, -1), 'd': (1, 0), 'a': (-1, 0)}
-_ROT = {'q': +1, 'e': -1}            # +1 = rotate_left (CCW), -1 = rotate_right (CW)
+# We REUSE the movement logic from wasd/drive.py rather than duplicating it.
+# drive.py is pygame-based, so it gets imported lazily (pulls pygame) and we
+# translate web key strings into the pygame keycodes its functions expect.
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+_drive_mod = None          # the imported wasd.drive module
+_keycode = None            # {'w': pygame.K_w, ...}
 
 bot = None                 # lazily-created RasBot instance
 robot_lock = threading.Lock()
@@ -54,6 +56,12 @@ run_active = False
 run_mode = 'manual'
 last_cmd = None            # last motion command tuple sent to the bot
 last_cmd_time = 0.0        # wall-clock of the last drive command (for the watchdog)
+
+# Camera pan/tilt servo state (mirrors wasd/drive.py's arrow-key behavior)
+PAN_STEP = 10
+TILT_STEP = 10
+pan_angle = 90             # 0-180, default centered
+tilt_angle = 25            # 0-100, default
 
 
 def get_bot():
@@ -69,34 +77,26 @@ def get_bot():
         return None, str(e)
 
 
-def compute_command(keys, speed):
-    """Map a set of held keys to a motion command (mirrors wasd/drive.py)."""
-    keys = {str(k).lower() for k in keys}
-    vx = sum(d[0] for k, d in _TRANS.items() if k in keys)
-    vy = sum(d[1] for k, d in _TRANS.items() if k in keys)
-    rot = sum(v for k, v in _ROT.items() if k in keys)
-    if vx or vy:
-        # angle convention matches bot.move(): 0=right, 90=forward, 180=left, 270=back
-        angle = round(math.degrees(math.atan2(vy, vx)))
-        return ('move', angle, speed)
-    if rot > 0:
-        return ('rotate_left', speed)
-    if rot < 0:
-        return ('rotate_right', speed)
-    return ('stop',)
+def get_drive():
+    """Lazily import wasd/drive.py (pulls pygame). Returns (module, None) or (None, err)."""
+    global _drive_mod, _keycode
+    if _drive_mod is not None:
+        return _drive_mod, None
+    try:
+        import pygame
+        from wasd import drive as drive_mod
+        _keycode = {'w': pygame.K_w, 'a': pygame.K_a, 's': pygame.K_s,
+                    'd': pygame.K_d, 'q': pygame.K_q, 'e': pygame.K_e}
+        _drive_mod = drive_mod
+        return _drive_mod, None
+    except Exception as e:
+        return None, str(e)
 
 
-def apply_command(b, cmd):
-    """Send a command tuple from compute_command() to the robot."""
-    kind = cmd[0]
-    if kind == 'move':
-        b.move(cmd[2], cmd[1])
-    elif kind == 'rotate_left':
-        b.rotate_left(cmd[1])
-    elif kind == 'rotate_right':
-        b.rotate_right(cmd[1])
-    else:
-        b.stop()
+def _keys_to_pressed(keys):
+    """Translate web key strings into the pygame-keycode->bool map drive.py reads."""
+    held = {str(k).lower() for k in keys}
+    return {code: (ch in held) for ch, code in _keycode.items()}
 
 
 def drive(keys, speed):
@@ -109,18 +109,50 @@ def drive(keys, speed):
     b, err = get_bot()
     if b is None:
         return {"status": "error", "message": f"Robot unavailable: {err}"}
+    dmod, derr = get_drive()
+    if dmod is None:
+        return {"status": "error", "message": f"drive.py unavailable: {derr}"}
     try:
         speed = int(speed)
     except (TypeError, ValueError):
         speed = DRIVE_SPEED_DEFAULT
     speed = max(DRIVE_SPEED_MIN, min(DRIVE_SPEED_MAX, speed))
-    cmd = compute_command(keys, speed)
+    # drive.py's OWN functions decide and apply the motion (no duplicate logic here).
+    pressed = _keys_to_pressed(keys)
+    cmd = dmod.desired_command(pressed, speed)
     with robot_lock:
         last_cmd_time = time.time()
         if cmd != last_cmd:          # only hit I2C when the command actually changes
-            apply_command(b, cmd)
+            dmod.apply_command(b, cmd)
             last_cmd = cmd
     return {"status": "ok", "command": cmd[0]}
+
+
+def servo(axis, delta):
+    """Nudge a camera servo (pan/tilt) by `delta` degrees — like drive.py's arrows."""
+    global pan_angle, tilt_angle
+    b, err = get_bot()
+    if b is None:
+        return {"status": "error", "message": f"Robot unavailable: {err}"}
+    try:
+        delta = int(delta)
+    except (TypeError, ValueError):
+        return {"status": "error", "message": "delta must be a number"}
+    with robot_lock:
+        try:
+            if axis == "pan":
+                pan_angle = max(0, min(180, pan_angle + delta))
+                b.set_pan(pan_angle)
+                val = pan_angle
+            elif axis == "tilt":
+                tilt_angle = max(0, min(100, tilt_angle + delta))
+                b.set_tilt(tilt_angle)
+                val = tilt_angle
+            else:
+                return {"status": "error", "message": f"unknown axis '{axis}'"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+    return {"status": "ok", "axis": axis, "value": val}
 
 
 def start_run(mode):
@@ -188,6 +220,8 @@ capture_lock = threading.Lock()
 capture_busy = False
 capture_status = "idle"
 cam = None                 # lazily-created StereoCapture
+last_session = None        # folder from the last 360 scan (R) -> input for build (T)
+last_ply = None            # .ply built by build (T) -> served by the download (Y)
 # Canonical project-root captures/ (what the laptop build tools and scp expect).
 # StereoCapture's own default resolves to src/captures, so we pass this explicitly.
 CAPTURES_ROOT = str(Path(__file__).resolve().parent.parent / "captures")
@@ -203,14 +237,26 @@ def get_cam():
 
 
 def _run_capture(kind):
-    """Background worker for a capture; updates capture_status as it goes."""
-    global capture_busy, capture_status, last_cmd
-    b, err = get_bot()
-    if b is None:
-        capture_status = f"error: robot unavailable ({err})"
-        capture_busy = False
-        return
+    """Background worker for a capture/build; updates capture_status as it goes."""
+    global capture_busy, capture_status, last_cmd, last_session, last_ply
     try:
+        # Build (T) is pure compute — no robot, no camera.
+        if kind == "build":
+            from pointcloud import scan360
+            if not last_session or not os.path.isdir(last_session):
+                capture_status = "error: no scan yet — run a 360 scan (R) first"
+                return
+            capture_status = "building point cloud (this can take a while)..."
+            ply = scan360.build_from_session(last_session, log=lambda *a, **k: None)
+            last_ply = ply
+            capture_status = f"done: built {os.path.basename(ply)} — ready to download"
+            return
+
+        # scan360 (R) and single (V) need the robot + RealSense camera.
+        b, err = get_bot()
+        if b is None:
+            capture_status = f"error: robot unavailable ({err})"
+            return
         from setup_and_api.api import Color
         with robot_lock:                      # make sure we're not driving
             b.stop()
@@ -224,7 +270,9 @@ def _run_capture(kind):
             from pointcloud import scan360
             capture_status = "360 scan: rotating + capturing..."
             session = scan360.run_scan(b, c, out_root=CAPTURES_ROOT, log=lambda *a, **k: None)
-            capture_status = f"done: {os.path.basename(session)} (scan)"
+            last_session = session
+            last_ply = None               # a new scan invalidates the old build
+            capture_status = f"done: {os.path.basename(session)} (scan) — press Build (T)"
         else:  # single
             capture_status = "capturing single frame..."
             folder = c.save(out_root=CAPTURES_ROOT)
@@ -237,24 +285,27 @@ def _run_capture(kind):
     except Exception as e:
         capture_status = f"error: {e}"
     finally:
-        with robot_lock:
-            try:
-                b.stop()
-            except Exception:
-                pass
-            last_cmd = ('stop',)
-            if not run_active:
-                try:
-                    b.leds_off()
-                except Exception:
-                    pass
+        if kind != "build":               # only touch the robot if we used it
+            b2, _ = get_bot()
+            if b2 is not None:
+                with robot_lock:
+                    try:
+                        b2.stop()
+                    except Exception:
+                        pass
+                    last_cmd = ('stop',)
+                    if not run_active:
+                        try:
+                            b2.leds_off()
+                        except Exception:
+                            pass
         capture_busy = False
 
 
 def start_capture(kind):
     """Kick off a capture in the background if one isn't already running."""
     global capture_busy, capture_status
-    if kind not in ("scan360", "single"):
+    if kind not in ("scan360", "single", "build"):
         return {"status": "error", "message": f"Unknown capture '{kind}'"}
     with capture_lock:
         if capture_busy:
@@ -374,6 +425,16 @@ class ControlHandler(BaseHTTPRequestHandler):
         elif path == "/api/capture/status":
             self.send_json(200, {"busy": capture_busy, "status": capture_status})
 
+        elif path == "/api/cloud/status":
+            ready = bool(last_ply and os.path.isfile(last_ply))
+            self.send_json(200, {
+                "has_cloud": ready,
+                "name": os.path.basename(last_ply) if ready else None,
+            })
+
+        elif path == "/api/cloud/download":
+            self.send_cloud()
+
         elif path == "/":
             self.send_html(200, self.get_landing_page())
 
@@ -413,6 +474,13 @@ class ControlHandler(BaseHTTPRequestHandler):
         elif path == "/api/capture/single":
             self.send_json(200, start_capture("single"))
 
+        elif path == "/api/capture/build":
+            self.send_json(200, start_capture("build"))
+
+        elif path == "/api/servo":
+            body = self.read_json()
+            self.send_json(200, servo(body.get("axis"), body.get("delta", 0)))
+
         else:
             self.send_json(404, {"error": "Not found"})
 
@@ -425,6 +493,34 @@ class ControlHandler(BaseHTTPRequestHandler):
             return json.loads(self.rfile.read(length).decode() or "{}")
         except Exception:
             return {}
+
+    def send_cloud(self):
+        """Stream the last built .ply to the browser as a file download."""
+        if not (last_ply and os.path.isfile(last_ply)):
+            self.send_json(404, {"status": "error",
+                                 "message": "No cloud built yet — run a 360 scan (R) then Build (T)"})
+            return
+        try:
+            size = os.path.getsize(last_ply)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition",
+                             f'attachment; filename="{os.path.basename(last_ply)}"')
+            self.send_header("Content-Length", str(size))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            with open(last_ply, "rb") as f:
+                while True:
+                    chunk = f.read(64 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except Exception as e:
+            # headers may already be sent; best effort
+            try:
+                self.send_json(500, {"status": "error", "message": str(e)})
+            except Exception:
+                pass
 
     def do_OPTIONS(self):
         """Handle CORS preflight requests."""
