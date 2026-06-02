@@ -34,7 +34,7 @@ SCAN_ROTATE_SPEED = 40       # motor speed while rotating
 # Calibrated seconds of rotate-pulse per DEGREE (pulsed, not one long spin). With
 # SCAN_RETURN_MODE="forward" the full 10-step turn must total 360 deg to land back on start.
 # Re-tune from one run: undershoots by d deg -> new = old*360/(360-d); overshoots -> 360/(360+d).
-SCAN_SEC_PER_DEG  = 2.7 / 360.0
+SCAN_SEC_PER_DEG  = 2.73 / 360.0
 SCAN_SETTLE_PAUSE = 0.4      # seconds to let the chassis settle before a shot
 SCAN_BRAKE_TAP    = 0.0      # seconds of reverse pulse after each step to kill coast (0=off)
 SCAN_DIR          = 1        # +1 = CCW (rotate_left); -1 = CW. Merge follows this.
