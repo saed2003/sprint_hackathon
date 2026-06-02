@@ -38,7 +38,7 @@ SCAN_SEC_PER_DEG  = 2.7 / 360.0
 SCAN_SETTLE_PAUSE = 0.4      # seconds to let the chassis settle before a shot
 SCAN_BRAKE_TAP    = 0.0      # seconds of reverse pulse after each step to kill coast (0=off)
 SCAN_DIR          = 1        # +1 = CCW (rotate_left); -1 = CW. Merge follows this.
-SCAN_RETURN_HOME  = FALSE     # TRUE/FALSE toggle for the EXTRA rotation after the 10th photo:
+SCAN_RETURN_HOME  = False     # TRUE/FALSE toggle for the EXTRA rotation after the 10th photo:
                              #   True  = do the final turn back toward start (uses SCAN_RETURN_MODE);
                              #   False = stop right after the last shot, no extra turn.
 SCAN_RETURN_MODE  = "forward"  # only used when SCAN_RETURN_HOME=True.
