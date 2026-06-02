@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from setup_and_api.api import RasBot, Color
 
 # ── tunables ──────────────────────────────────────────────────────────────────
-BASE_SPEED   = 35    # straight-ahead speed when centred
+BASE_SPEED   = 25    # straight-ahead speed when centred
 MAX_SPEED    = 255
 MIN_SPEED    = 5     # keep wheels slightly spinning even during sharp turns
 
@@ -280,6 +280,11 @@ def navigate_junction(bot, pid, log):
         while time.time() < deadline:
             _, li, ri, _, _, _ = read_sensors(bot)
             if li or ri:
+                bot.stop()
+                time.sleep(0.1)
+                # Creep forward to centre the inner sensors on the branch
+                bot.forward(MISS_CREEP_SPEED)
+                time.sleep(0.2)
                 bot.stop()
                 time.sleep(0.1)
                 pid.reset()
