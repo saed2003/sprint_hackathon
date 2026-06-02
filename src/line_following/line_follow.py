@@ -141,17 +141,20 @@ class PID:
 
 # ── motor application ─────────────────────────────────────────────────────────
 
+MAX_CORRECTION = 40   # clamp so violent turns don't cause overshoot
+
+
 def apply_correction(bot, correction):
     """Drive both sides from a PID correction value with adaptive speed.
 
     correction > 0  → steer right (left faster, right slower)
     correction < 0  → steer left  (right faster, left slower)
 
-    Adaptive speed: slow down proportionally when correcting so the robot
-    doesn't overshoot on curves. Full speed only when centred (correction=0).
+    Clamped to MAX_CORRECTION to prevent overshoot on sharp turns.
+    Adaptive speed: slows down proportionally when correcting.
     """
-    # Reduce forward speed as correction grows → smoother turns
-    speed = max(MIN_SPEED + 5, int(BASE_SPEED - abs(correction) * 0.25))
+    correction = max(-MAX_CORRECTION, min(MAX_CORRECTION, correction))
+    speed = max(MIN_SPEED + 5, int(BASE_SPEED - abs(correction) * 0.3))
     left  = max(MIN_SPEED, min(MAX_SPEED, int(speed + correction)))
     right = max(MIN_SPEED, min(MAX_SPEED, int(speed - correction)))
     bot._apply_motors(left, left, right, right)
@@ -329,9 +332,12 @@ def run(bot, cam=None, log=_log):
                     miss_count += 1
 
                 if miss_count <= MISS_CREEP_TICKS:
-                    # Phase 1: creep with last PID correction — keeps turning
-                    last_corr = KP_SMALL * last_error   # P-only for creep
-                    apply_correction(bot, last_corr * (MISS_CREEP_SPEED / BASE_SPEED))
+                    # Phase 1: creep at MISS_CREEP_SPEED keeping last turn direction
+                    scale = MISS_CREEP_SPEED / max(1, BASE_SPEED)
+                    corr  = max(-MAX_CORRECTION, min(MAX_CORRECTION, KP_SMALL * last_error * scale))
+                    lspd  = max(MIN_SPEED, min(MAX_SPEED, int(MISS_CREEP_SPEED + corr)))
+                    rspd  = max(MIN_SPEED, min(MAX_SPEED, int(MISS_CREEP_SPEED - corr)))
+                    bot._apply_motors(lspd, lspd, rspd, rspd)
                     time.sleep(LOOP_PAUSE)
                     continue
 
