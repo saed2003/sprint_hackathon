@@ -34,14 +34,18 @@ SCAN_ROTATE_SPEED = 40       # motor speed while rotating
 # Calibrated seconds of rotate-pulse per DEGREE (pulsed, not one long spin). With
 # SCAN_RETURN_MODE="forward" the full 10-step turn must total 360 deg to land back on start.
 # Re-tune from one run: undershoots by d deg -> new = old*360/(360-d); overshoots -> 360/(360+d).
-SCAN_SEC_PER_DEG  = 2.73 / 360.0
+SCAN_SEC_PER_DEG  = 2.7 / 360.0
 SCAN_SETTLE_PAUSE = 0.4      # seconds to let the chassis settle before a shot
 SCAN_BRAKE_TAP    = 0.0      # seconds of reverse pulse after each step to kill coast (0=off)
 SCAN_DIR          = 1        # +1 = CCW (rotate_left); -1 = CW. Merge follows this.
-SCAN_RETURN_HOME  = True     # after the last shot, rotate back to start (no photo)
-SCAN_RETURN_MODE  = "forward"  # "forward" = one more step to finish the 360 circle (needs
-                             #   SCAN_SEC_PER_DEG calibrated); "rewind" = spin back the exact
-                             #   steps just made (lands on start regardless, ~324 deg backward).
+SCAN_RETURN_HOME  = FALSE     # TRUE/FALSE toggle for the EXTRA rotation after the 10th photo:
+                             #   True  = do the final turn back toward start (uses SCAN_RETURN_MODE);
+                             #   False = stop right after the last shot, no extra turn.
+SCAN_RETURN_MODE  = "forward"  # only used when SCAN_RETURN_HOME=True.
+                             #   "forward" = one more step to finish the 360 circle (needs
+                             #     SCAN_SEC_PER_DEG calibrated; can overshoot start if the scan does);
+                             #   "rewind"  = spin back the exact steps just made (lands on start
+                             #     regardless of calibration, but spins the wheels ~324 deg backward).
 
 # ── cloud tunables ───────────────────────────────────────────────────────────────
 VOXEL = 0.01                 # final resolution (m)
