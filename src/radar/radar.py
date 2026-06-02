@@ -46,8 +46,10 @@ STEP_DEG     = 3         # servo move per radar step (smaller = finer, slower)
 SETTLE_S     = 0.05      # wait after moving the servo before reading (settle)
 MAX_RANGE_CM = 200       # display radius + valid-echo cutoff (HC-SR04 ~400 max)
 MIN_RANGE_CM = 2         # readings below this are treated as no-echo
-PERSIST_S    = 4.0       # how long a blip lingers (phosphor afterglow)
+PERSIST_S    = 4.0       # how long a return lingers (phosphor afterglow)
 TRAIL_S      = 0.7       # length of the sweep-line motion trail
+SURF_JUMP_CM = 25        # depth jump that breaks the surface (object edge)
+SURF_GAP_MUL = 1.8       # max angular gap (x step) before the surface breaks
 SIZE_PX      = 720       # output image is SIZE_PX x SIZE_PX
 WEB_PORT     = 8001      # stream_server uses 8000; stay off it
 
@@ -199,7 +201,7 @@ class Radar:
         self._draw_grid(img, cx, cy, radius, ppc)
         self._draw_trail(img, cx, cy, radius, trail, now)
         self._draw_sweep(img, cx, cy, radius, cur_pan)
-        nearest = self._draw_blips(img, cx, cy, ppc, hits, now)
+        nearest = self._draw_surface(img, cx, cy, ppc, hits, now)
         self._draw_hud(img, cur_pan, hits, nearest)
         return img
 
@@ -243,22 +245,59 @@ class Radar:
         y = int(cy - radius * math.cos(b))
         cv2.line(img, (cx, cy), (x, y), C_SWEEP, 2, cv2.LINE_AA)
 
-    def _draw_blips(self, img, cx, cy, ppc, hits, now):
+    def _segment(self, hits, now):
+        """Group fresh returns into runs of a connected surface.
+
+        Adjacent pan angles join the same run unless the depth jumps (an object
+        edge) or an angle is missing (no echo) — those start a new run.
+        """
+        fresh = [(pan, d, t) for pan, (d, t) in hits.items()
+                 if now - t <= PERSIST_S]
+        fresh.sort(key=lambda h: h[0])
+        gap = self.step * SURF_GAP_MUL
+        runs, cur = [], []
+        for h in fresh:
+            if cur:
+                p0, d0, _ = cur[-1]
+                if h[0] - p0 > gap or abs(h[1] - d0) > SURF_JUMP_CM:
+                    runs.append(cur)
+                    cur = []
+            cur.append(h)
+        if cur:
+            runs.append(cur)
+        return runs
+
+    def _draw_surface(self, img, cx, cy, ppc, hits, now):
+        """Draw connected object outlines (with a faint solid fill)."""
         nearest = None     # (dist, pan, x, y)
-        for pan, (dist, t) in hits.items():
-            age = now - t
-            if age > PERSIST_S:
-                continue
-            a = 1.0 - age / PERSIST_S
-            x, y = self._to_xy(cx, cy, ppc, pan, dist)
-            col = tuple(int(c * a) for c in C_BLIP)
-            cv2.circle(img, (x, y), 4, col, -1, cv2.LINE_AA)
-            if nearest is None or dist < nearest[0]:
-                nearest = (dist, pan, x, y)
+        overlay = img.copy()
+
+        for run in self._segment(hits, now):
+            pts = [self._to_xy(cx, cy, ppc, p, d) for p, d, _ in run]
+            age = now - min(t for _, _, t in run)
+            a = max(0.0, 1.0 - age / PERSIST_S)
+
+            for (p, d, _), (x, y) in zip(run, pts):
+                if nearest is None or d < nearest[0]:
+                    nearest = (d, p, x, y)
+
+            if len(pts) >= 2:
+                poly = np.array([(cx, cy)] + pts, dtype=np.int32)
+                cv2.fillPoly(overlay, [poly], tuple(int(c * 0.35) for c in C_BLIP))
+                arr = np.array(pts, dtype=np.int32)
+                cv2.polylines(img, [arr], False,
+                              tuple(int(c * a * 0.5) for c in C_BLIP), 5, cv2.LINE_AA)
+                cv2.polylines(img, [arr], False,
+                              tuple(int(c * a) for c in C_BLIP), 2, cv2.LINE_AA)
+            else:
+                x, y = pts[0]
+                cv2.circle(img, (x, y), 3, tuple(int(c * a) for c in C_BLIP),
+                           -1, cv2.LINE_AA)
+
+        cv2.addWeighted(overlay, 0.35, img, 0.65, 0, img)
 
         if nearest is not None:
             _, _, x, y = nearest
-            cv2.circle(img, (x, y), 8, C_NEAR, 2, cv2.LINE_AA)
             cv2.line(img, (x - 11, y), (x - 5, y), C_NEAR, 1, cv2.LINE_AA)
             cv2.line(img, (x + 5, y), (x + 11, y), C_NEAR, 1, cv2.LINE_AA)
             cv2.line(img, (x, y - 11), (x, y - 5), C_NEAR, 1, cv2.LINE_AA)
@@ -271,7 +310,7 @@ class Radar:
         lines = [
             f"bearing : {self._bearing(cur_pan):+d} deg",
             f"range   : 0-{self.max_range} cm",
-            f"blips   : {len(hits)}",
+            f"returns : {len(hits)}",
         ]
         if nearest is not None:
             dist, pan, _, _ = nearest
