@@ -265,9 +265,21 @@ def navigate_junction(bot, pid, log):
     for spin_fn, label in directions:
         log(f"junction → trying {label}")
         deadline = time.time() + JUNCTION_TIMEOUT_S
+
+        # Phase 1: spin until we leave the junction bar (not all_on anymore)
+        while time.time() < deadline:
+            _, _, _, _, all_on, _ = read_sensors(bot)
+            if not all_on:
+                break
+            spin_fn(JUNCTION_SPIN_SPEED)
+            time.sleep(LOOP_PAUSE)
+        bot.stop()
+        time.sleep(0.05)
+
+        # Phase 2: spin until an inner sensor finds the branch
         while time.time() < deadline:
             _, li, ri, _, _, _ = read_sensors(bot)
-            if li or ri:             # inner sensor on branch = aligned
+            if li or ri:
                 bot.stop()
                 time.sleep(0.1)
                 pid.reset()
