@@ -48,8 +48,13 @@ def start_stream_server():
     """Start the camera streaming server."""
     global stream_process, stream_running, start_time
 
-    if stream_running:
+    # Only report "already running" if the process is genuinely still alive.
+    # A stale flag with a dead/crashed process would otherwise make the
+    # dashboard think the stream is up while serving nothing.
+    if stream_running and stream_process and stream_process.poll() is None:
         return {"status": "already_running", "message": "Stream already running"}
+    # Stale state (process died or was killed) -> reset and start fresh.
+    stream_running = False
 
     if not CAMERA_SCRIPT.exists():
         return {"status": "error", "message": f"Camera script not found: {CAMERA_SCRIPT}"}

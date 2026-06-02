@@ -11,7 +11,7 @@ import time
 import cv2
 import io
 import socket
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 import threading
 
 W, H, FPS = 1280, 720, 30
@@ -113,11 +113,16 @@ class MJPEGHandler(BaseHTTPRequestHandler):
 
             try:
                 while True:
+                    # Grab a reference to the latest frame under the lock, then
+                    # release it BEFORE the (relatively slow) JPEG encode so the
+                    # capture thread and other viewers aren't blocked.
                     with camera_lock:
-                        if latest_frame is None:
-                            continue
-                        # Encode frame as JPEG
-                        ret, jpeg = cv2.imencode('.jpg', latest_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                        frame = latest_frame
+                    if frame is None:
+                        time.sleep(0.01)
+                        continue
+
+                    ret, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
 
                     if ret:
                         frame_data = jpeg.tobytes()
@@ -183,7 +188,11 @@ if __name__ == '__main__':
 
     # Start HTTP server
     PORT = 8000
-    server = HTTPServer(('0.0.0.0', PORT), MJPEGHandler)
+    # ThreadingHTTPServer so multiple viewers can watch the stream at once.
+    # Plain HTTPServer is single-threaded: the first client's /stream.mjpg loop
+    # never returns, blocking every other viewer (they get a black screen).
+    server = ThreadingHTTPServer(('0.0.0.0', PORT), MJPEGHandler)
+    server.daemon_threads = True  # don't let viewer threads block shutdown
     local_ip = get_local_ip()
 
     print(f"\n{'='*60}")

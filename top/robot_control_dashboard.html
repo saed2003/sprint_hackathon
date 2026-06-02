@@ -539,9 +539,24 @@
 
     <script>
         // Configuration state
+        // Default the control/stream servers to the SAME host the dashboard was
+        // loaded from (e.g. sprint.local or the Pi's IP). Opening from another
+        // device then "just works" without typing an IP. 'localhost' is only used
+        // as a last resort when the page is opened via file:// (no hostname).
+        const pageHost = window.location.hostname || 'localhost';
+
+        // Migrate any stale saved value: if a previous session saved 'localhost'
+        // but we're now served from a real host, prefer the real host.
+        function resolveServer(storageKey, port) {
+            const saved = localStorage.getItem(storageKey);
+            if (saved && !/^localhost\b|^127\.0\.0\.1\b/.test(saved) ) return saved;
+            if (pageHost !== 'localhost') return `${pageHost}:${port}`;
+            return saved || `${pageHost}:${port}`;
+        }
+
         const config = {
-            controlServer: localStorage.getItem('controlServer') || 'localhost:9000',
-            streamServer: localStorage.getItem('streamServer') || 'localhost:8000',
+            controlServer: resolveServer('controlServer', 9000),
+            streamServer: resolveServer('streamServer', 8000),
             streamConnected: false,
             controlConnected: false
         };
