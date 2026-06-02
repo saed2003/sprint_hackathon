@@ -5,14 +5,20 @@ no Raspberry Pi wheel). Everything runs on the robot; press R in drive.py to cap
 to build.
 
 How rotation + the merge work (the fix for "the bot turns too far"):
-  The RasBot has no IMU/encoders, so a blind timed pulse OVERSHOOTS (coast after stop,
-  low-speed nonlinearity). Instead we rotate by VISION: pulse a little, measure how far
-  the camera actually turned from the overlapping IR images (ORB -> essential matrix ->
-  pose; see yaw_from_images / rotate_by_vision), and stop at ~36 deg. Each shot's achieved
-  angle is written to shot_NN/angle.txt, and the merge rotates each view by exactly that
-  recorded angle (back-projection: X=(u-ppx)Z/fx, Y=(v-ppy)Z/fy, Z=depth). If a view is
-  textureless the rotation dead-reckons from the timer, and the merge falls back to the
-  image-measured / nominal angle. Pass --known to trust the timer instead.
+  The RasBot has no IMU/encoders, so we rotate by CALIBRATED TIMING: one motor pulse of
+  SCAN_SEC_PER_DEG * 36 deg between each shot, 9 pulses for a 10-shot turn (~324 deg of
+  rotation = a full 360 deg of coverage). Each shot records its nominal angle (0, 36, 72,
+  ...) to shot_NN/angle.txt and the merge rotates each view by exactly that
+  (back-projection: X=(u-ppx)Z/fx, Y=(v-ppy)Z/fy, Z=depth). Calibrate ONCE so 9 pulses
+  land near 324 deg total: `python3 pointcloud/scan360.py --calibrate --turned <measured>`.
+
+  There is also a VISION closed-loop (SCAN_CLOSED_LOOP / rotate_by_vision): pulse a bit,
+  measure the turn from overlapping IR images (ORB -> homography -> yaw), stop at ~36 deg.
+  It is OFF by default because at a 36 deg step the two IR images barely overlap, so the
+  homography under-measures the yaw (it read ~20 deg when the bot really turned ~90); the
+  loop then kept pulsing to its time budget and the bot spun ~2x too far (~820 deg for a
+  360 scan), and the wrong recorded angles also skewed the merge. Calibrated timing is the
+  reliable choice on this encoder-less chassis. Set SCAN_CLOSED_LOOP=True to try vision.
 
   For a still-cleaner result, copy the raw shots to a laptop and run merge_clouds.py (ICP).
 
@@ -46,14 +52,20 @@ SCAN_SHOTS        = 10       # views per full turn: 10 -> 36 deg each (9->40, 8-
 SCAN_ROTATE_SPEED = 40       # motor speed used while rotating
 # <<< CALIBRATE (pulsed): seconds of rotate-pulse per DEGREE, measured the way the scan
 # actually moves (short start/stop pulses), NOT from one long continuous spin. See
-# `python3 pointcloud/scan360.py --calibrate`. Default 6.0/360 just matches the old 6 s/rev guess.
-SCAN_SEC_PER_DEG  = 6.0 / 360.0
+# `python3 pointcloud/scan360.py --calibrate`. This is the ONE knob that sets how far the
+# bot turns per shot, so a wrong value over/under-rotates the whole scan.
+# Estimate below (~3.0 s/rev) is derived from the reported ~820 deg over-rotation of the old
+# vision loop (~9 steps x ~0.75 s spin -> ~120 deg/s). CONFIRM it with --calibrate --turned.
+SCAN_SEC_PER_DEG  = 3.0 / 360.0
 SCAN_SETTLE_PAUSE = 0.4      # seconds to let the chassis stop shaking before a shot
 SCAN_BRAKE_TAP    = 0.0      # seconds of reverse pulse after each step to kill coast (0=off)
 SCAN_DIR          = 1        # +1 = rotate CCW (rotate_left); -1 = CW. Merge follows this.
 
-# ── visual closed-loop rotation (the overshoot fix: stop when the CAMERA says ~step) ──
-SCAN_CLOSED_LOOP   = True    # rotate by vision (True) instead of blind timing (False)
+# ── visual closed-loop rotation (stop when the CAMERA says ~step) ──
+# OFF by default: at a 36 deg step the IR images barely overlap, so the homography
+# UNDER-measures the yaw and the loop over-rotates (~820 deg for a 360 scan). Calibrated
+# timing (closed_loop=False) is reliable on this encoder-less bot. See the module docstring.
+SCAN_CLOSED_LOOP   = False   # rotate by vision (True) instead of calibrated timing (False)
 SCAN_MIN_PULSE_DEG = 5       # smallest rotation pulse (enough to beat motor stiction)
 SCAN_MAX_PULSE_DEG = 15      # largest single pulse (used early; pulses shrink near target)
 SCAN_ANGLE_TOL     = 2       # stop once within this many deg of the target step

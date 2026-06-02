@@ -24,7 +24,7 @@ Speed (tap)
   -           slow down  (step 20, min 40)
 
 Capture (tap)
-  R   run a 360 capture: rotate in place, take 9 shots -> captures/scan_<ts>/
+  R   run a 360 capture: rotate in place, take 10 shots -> captures/scan_<ts>/
   T   build the 3D point cloud from the last R capture -> .../merged_360.ply
   Y   open the 3D point cloud viewer (orbit with the mouse)
   V   take a single capture in place -> captures/<timestamp>/
@@ -191,7 +191,7 @@ def main():
                             bot.set_all_leds_color(Color.BLUE)
                             draw_hud(screen, font, '360 capture...', speed, pan, tilt)
                             try:
-                                print('--- 360 capture: 9 shots (do not touch the robot) ---')
+                                print(f'--- 360 capture: {scan360.SCAN_SHOTS} shots (do not touch the robot) ---')
                                 last_session = scan360.run_scan(bot, cam, log=print)
                                 last_ply = None
                                 bot.set_all_leds_color(Color.GREEN); bot.beep(0.15)
