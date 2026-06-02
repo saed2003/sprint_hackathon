@@ -58,7 +58,7 @@ SCAN_ROTATE_SPEED = 40       # motor speed used while rotating
 # The value that closes on start is between 2.5 and 2.6, so start at the midpoint 2.55/360.
 # Fine-tune from ONE full run by how far the bot ends from start:
 #   undershoots by d deg: new = old * 360/(360 - d);  overshoots by d: new = old * 360/(360 + d).
-SCAN_SEC_PER_DEG  = 2.55 / 360.0
+SCAN_SEC_PER_DEG  = 2.58 / 360.0
 SCAN_SETTLE_PAUSE = 0.4      # seconds to let the chassis stop shaking before a shot
 SCAN_BRAKE_TAP    = 0.0      # seconds of reverse pulse after each step to kill coast (0=off)
 SCAN_DIR          = 1        # +1 = rotate CCW (rotate_left); -1 = CW. Merge follows this.
