@@ -64,7 +64,7 @@ SCAN_BRAKE_TAP    = 0.0      # seconds of reverse pulse after each step to kill 
 SCAN_DIR          = 1        # +1 = rotate CCW (rotate_left); -1 = CW. Merge follows this.
 SCAN_RETURN_HOME  = True     # after the last shot, rotate back to the starting heading (no
                              #   photo). Set False to leave the bot wherever the scan ends.
-SCAN_RETURN_MODE  = "rewind"  # HOW it returns home (only when SCAN_RETURN_HOME):
+SCAN_RETURN_MODE  = "forward"  # HOW it returns home (only when SCAN_RETURN_HOME):
                              #   "forward" = one more 36 deg step to finish the 360 deg circle
                              #     (short, but only lands on start if SCAN_SEC_PER_DEG is dialed in);
                              #   "rewind"  = spin back the exact 9 steps it just made, so it lands
