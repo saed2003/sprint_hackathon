@@ -52,18 +52,24 @@ SCAN_SHOTS        = 10       # views per full turn: 10 -> 36 deg each (9->40, 8-
 SCAN_ROTATE_SPEED = 40       # motor speed used while rotating
 # <<< CALIBRATE (pulsed): seconds of rotate-pulse per DEGREE, measured the way the scan
 # actually moves (short start/stop pulses), NOT from one long continuous spin. This ONE knob
-# sets how far the bot turns per step; the FULL turn (10 steps) must total 360 deg for the bot
-# to come back to start. Bracketed from real runs of the full scan + return-home:
-#   3.0/360 -> way over;  2.6/360 -> overshot start by ~10-20 deg;  2.5/360 -> undershot start.
-# The value that closes on start is between 2.5 and 2.6, so start at the midpoint 2.55/360.
-# Fine-tune from ONE full run by how far the bot ends from start:
+# sets how far the bot turns per step; with SCAN_RETURN_MODE="forward" the FULL turn (10 steps)
+# must total 360 deg for the bot to come back to start. Dialed in on the real bot: 2.71/360
+# lands it on the start heading (earlier guesses 2.5-2.6 under-shot; battery/floor grip shift it).
+# Re-tune from ONE full run by how far the bot ends from start:
 #   undershoots by d deg: new = old * 360/(360 - d);  overshoots by d: new = old * 360/(360 + d).
-SCAN_SEC_PER_DEG  = 2.7 / 360.0
+# (Not needed if SCAN_RETURN_MODE="rewind" -- that lands on start regardless of this value.)
+SCAN_SEC_PER_DEG  = 2.71 / 360.0
 SCAN_SETTLE_PAUSE = 0.4      # seconds to let the chassis stop shaking before a shot
 SCAN_BRAKE_TAP    = 0.0      # seconds of reverse pulse after each step to kill coast (0=off)
 SCAN_DIR          = 1        # +1 = rotate CCW (rotate_left); -1 = CW. Merge follows this.
-SCAN_RETURN_HOME  = True     # after the last shot, do ONE more step (no photo) to close the
-                             #   circle and bring the bot back to its starting heading.
+SCAN_RETURN_HOME  = True     # after the last shot, rotate back to the starting heading (no
+                             #   photo). Set False to leave the bot wherever the scan ends.
+SCAN_RETURN_MODE  = "forward"  # HOW it returns home (only when SCAN_RETURN_HOME):
+                             #   "forward" = one more 36 deg step to finish the 360 deg circle
+                             #     (short, but only lands on start if SCAN_SEC_PER_DEG is dialed in);
+                             #   "rewind"  = spin back the exact 9 steps it just made, so it lands
+                             #     on start regardless of calibration (but turns ~324 deg backward).
+                             #   Flip this to "rewind" to try the backtrack, "forward" to revert.
 
 # ── visual closed-loop rotation (stop when the CAMERA says ~step) ──
 # OFF by default: at a 36 deg step the IR images barely overlap, so the homography
@@ -447,16 +453,19 @@ def run_scan(bot, cam, shots=SCAN_SHOTS, rotate_speed=SCAN_ROTATE_SPEED,
              sec_per_deg=SCAN_SEC_PER_DEG, settle_pause=SCAN_SETTLE_PAUSE,
              brake_tap=SCAN_BRAKE_TAP, direction=SCAN_DIR,
              closed_loop=SCAN_CLOSED_LOOP, return_home=SCAN_RETURN_HOME,
-             out_root=None, log=print):
+             return_mode=SCAN_RETURN_MODE, out_root=None, log=print):
     """Rotate in place and capture `shots` views. Returns the session folder.
 
     closed_loop=False (default): blind, calibrated timed pulses (no camera used to steer).
     closed_loop=True: each step rotates by VISION (rotate_by_vision) until the camera
     reports ~360/shots deg, and the achieved angle is written to each shot's angle.txt.
 
-    return_home=True (default): after the last shot, do ONE more identical rotation step
-    (no photo) so the 10 shots over 0..324 deg are followed by a final 36 deg turn that
-    completes the full 360 deg circle and leaves the bot back on its starting heading.
+    return_home=True (default): after the last shot, rotate back to the starting heading
+    (no photo, no extra shot folder, not merged). return_mode picks how:
+      "forward" - one more 36 deg step to finish the full 360 deg circle (short; lands on
+                  start only if sec_per_deg is calibrated so 10 steps total 360 deg);
+      "rewind"  - spin back the exact shots-1 steps just made, so it lands on start
+                  regardless of calibration, at the cost of turning ~324 deg backward.
     """
     out_root = out_root or default_out_root()
     session = os.path.join(out_root, "scan_" + time.strftime("%Y%m%d_%H%M%S"))
@@ -492,23 +501,39 @@ def run_scan(bot, cam, shots=SCAN_SHOTS, rotate_speed=SCAN_ROTATE_SPEED,
                 turned = step_angle
             cumulative += turned
 
-    # close the circle: one more identical rotation (no photo, no shot folder, not merged)
-    # so the bot ends on its starting heading. The 10 shots sit 36 deg apart over 0..324 deg;
-    # this final step adds the last 36 deg to make a full 360 deg turn.
+    # return to the starting heading (no photo, no shot folder, not merged).
     if return_home and shots > 1:
-        log("  returning to start heading (one more step, no photo)")
-        if closed_loop:
-            rotate_by_vision(bot, cam, step_angle, K, direction=direction,
-                             rotate_speed=rotate_speed, sec_per_deg=sec_per_deg,
-                             brake_tap=brake_tap, log=log)
+        if return_mode == "rewind":
+            # undo the exact rotations just made: shots-1 identical pulses in the OPPOSITE
+            # direction, each preceded by a stop+settle so it mirrors a forward step. This
+            # lands on start regardless of how sec_per_deg is calibrated.
+            log(f"  returning to start: rewinding the {shots - 1} steps it just made (no photo)")
+            for _ in range(shots - 1):
+                bot.stop()
+                time.sleep(settle_pause)
+                if closed_loop:
+                    rotate_by_vision(bot, cam, step_angle, K, direction=-direction,
+                                     rotate_speed=rotate_speed, sec_per_deg=sec_per_deg,
+                                     brake_tap=brake_tap, log=log)
+                else:
+                    _rotate_step(bot, rotate_speed, sec_per_deg * step_angle, -direction, brake_tap)
+                cumulative -= step_angle
         else:
-            _rotate_step(bot, rotate_speed, sec_per_deg * step_angle, direction, brake_tap)
-        cumulative += step_angle
+            # "forward": one more identical step to complete the full 360 deg circle.
+            log("  returning to start: one more 36 deg step forward (no photo)")
+            if closed_loop:
+                rotate_by_vision(bot, cam, step_angle, K, direction=direction,
+                                 rotate_speed=rotate_speed, sec_per_deg=sec_per_deg,
+                                 brake_tap=brake_tap, log=log)
+            else:
+                _rotate_step(bot, rotate_speed, sec_per_deg * step_angle, direction, brake_tap)
+            cumulative += step_angle
 
     bot.stop()
-    log(f"  scan complete: {shots} shots over ~{step_angle * (shots - 1):.0f} deg"
-        + (f", then returned to start (~{cumulative:.0f} deg full turn)"
-           if return_home and shots > 1 else ""))
+    homed = ("" if not (return_home and shots > 1)
+             else ", then rewound back to start" if return_mode == "rewind"
+             else ", then stepped forward to start (~360 deg full turn)")
+    log(f"  scan complete: {shots} shots over ~{step_angle * (shots - 1):.0f} deg" + homed)
     return session
 
 
