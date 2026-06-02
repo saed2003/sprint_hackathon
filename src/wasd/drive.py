@@ -1,37 +1,11 @@
 """
-WASD controller for the RasbotV2 Mecanum robot — TRUE hold-to-move via pygame.
+WASD teleop for the RasbotV2 Mecanum robot (pygame). HOLD a key to move, release to stop.
+Needs a display, so run it inside the Pi desktop over VNC (not bare SSH), and click the
+window so it has keyboard focus (losing focus stops the robot).
 
-HOLD a movement key to move, RELEASE to stop (real key-up detection, no key-repeat
-tricks). This needs a desktop/display, so run it INSIDE the Pi's desktop over VNC
-(not bare SSH). It opens a small control window; that window must have keyboard FOCUS
-(click it) to receive keys. If the window loses focus, the robot stops (a safety bonus).
+Keys: W/A/S/D move, Q/E rotate, arrows pan/tilt camera, +/- speed,
+      R 360 capture, T build cloud, Y view cloud, V single capture, ESC quit.
 
-Install pygame on the Pi once:
-    sudo apt install -y python3-pygame        # or:  pip install pygame
-
-Movement (hold = move, release = stop; combine keys for diagonals)
-  W / S       forward / backward
-  A / D       strafe left / right
-  W+A, W+D …  diagonal / strafe blends
-  Q / E       rotate counter-clockwise / clockwise (in place)
-
-Camera servo (tap)
-  Arrow UP / DOWN     tilt camera up / down
-  Arrow LEFT / RIGHT  pan camera left / right
-
-Speed (tap)
-  + or =      speed up   (step 20, max 255)   — applies live while moving
-  -           slow down  (step 20, min 40)
-
-Capture (tap)
-  R   run a 360 capture: rotate in place, take 10 shots -> captures/scan_<ts>/
-  T   build the 3D point cloud from the last R capture -> .../merged_360.ply
-  Y   open the 3D point cloud viewer (orbit with the mouse)
-  V   take a single capture in place -> captures/<timestamp>/
-
-Quit          ESC, or close the window
-
-Run inside the VNC desktop:
   python3 wasd/drive.py
 """
 
@@ -41,7 +15,7 @@ import math
 import time
 import subprocess
 
-# project root = the folder that contains wasd/, camera/, pointcloud/, rasbot/, ...
+# project root on sys.path so `from camera...`, `from pointcloud...` resolve
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from setup_and_api.api import RasBot, Color
 from camera.rs_capture import StereoCapture
@@ -49,36 +23,29 @@ from pointcloud import scan360
 
 import pygame
 
-# ── tunables ────────────────────────────────────────────────────────────────
 SPEED_DEFAULT = 120
 SPEED_STEP    = 20
 SPEED_MIN     = 40
 SPEED_MAX     = 255
 PAN_STEP      = 10
 TILT_STEP     = 10
-FPS           = 60          # how often we poll the held keys and refresh the HUD
+FPS           = 60
 
-# held movement key -> translation contribution (vx: right +, vy: forward +)
+# held key -> translation (vx: right +, vy: forward +) and rotation (+1 CCW, -1 CW)
 _TRANS = {pygame.K_w: (0, 1), pygame.K_s: (0, -1),
           pygame.K_d: (1, 0), pygame.K_a: (-1, 0)}
-# held movement key -> rotation (+1 = CCW / rotate_left, -1 = CW / rotate_right)
 _ROT = {pygame.K_q: +1, pygame.K_e: -1}
 
 
 def desired_command(pressed, speed):
-    """Map the currently-held keys to a motion command tuple.
-
-    Translation (W/A/S/D, blended into diagonals) takes priority over rotation
-    (Q/E). Returns a tuple including the speed so the caller resends the command
-    only when something actually changes (including a live speed change).
-    """
+    """Held keys -> motion command tuple. Translation (W/A/S/D, blended) beats rotation
+    (Q/E); speed rides along so the caller resends only when something changes."""
     vx = sum(d[0] for k, d in _TRANS.items() if pressed[k])
     vy = sum(d[1] for k, d in _TRANS.items() if pressed[k])
-    rot = sum(v for k, v in _ROT.items() if pressed[k])    # +1/-1, cancels if both held
+    rot = sum(v for k, v in _ROT.items() if pressed[k])      # cancels if Q+E both held
     if vx or vy:
-        # angle convention matches bot.move(): 0=right, 90=forward, 180=left, 270=back
-        angle = round(math.degrees(math.atan2(vy, vx)))
-        return ('move', angle, speed)
+        # bot.move() angle: 0=right, 90=forward, 180=left, 270=back
+        return ('move', round(math.degrees(math.atan2(vy, vx))), speed)
     if rot > 0:
         return ('rotate_left', speed)
     if rot < 0:
@@ -87,13 +54,11 @@ def desired_command(pressed, speed):
 
 
 def apply_command(bot, cmd):
-    """Send a command tuple from desired_command() to the robot."""
-    kind = cmd[0]
-    if kind == 'move':
+    if cmd[0] == 'move':
         bot.move(cmd[2], cmd[1])
-    elif kind == 'rotate_left':
+    elif cmd[0] == 'rotate_left':
         bot.rotate_left(cmd[1])
-    elif kind == 'rotate_right':
+    elif cmd[0] == 'rotate_right':
         bot.rotate_right(cmd[1])
     else:
         bot.stop()
@@ -137,8 +102,8 @@ def main():
         screen = pygame.display.set_mode((480, 210))
         pygame.display.set_caption('RasBot WASD - hold to move')
     except Exception as e:
-        sys.exit('pygame could not open a window. Run this INSIDE the Pi desktop (VNC) as '
-                 'the normal user, not bare SSH / not via sudo.\n  ' + str(e))
+        sys.exit('pygame could not open a window. Run this INSIDE the Pi desktop (VNC) as the '
+                 'normal user, not bare SSH / not via sudo.\n  ' + str(e))
     font = pygame.font.SysFont('monospace', 16)
     clock = pygame.time.Clock()
 
@@ -151,7 +116,7 @@ def main():
         speed = SPEED_DEFAULT
         pan, tilt = 90, 25
         cam = None
-        last_session = None        # folder from the last R capture (input for T)
+        last_session = None        # last R capture folder (input for T)
         last_ply = None            # cloud built by T (input for Y)
         last_cmd = None            # last motion command sent (resend only on change)
         action = 'stopped'
@@ -162,19 +127,14 @@ def main():
                 for event in pygame.event.get():
                     if event.type == pygame.QUIT:
                         running = False
-
                     elif event.type == pygame.KEYDOWN:
                         key = event.key
                         if key == pygame.K_ESCAPE:
                             running = False
-
-                        # ── speed ──
                         elif key in (pygame.K_PLUS, pygame.K_EQUALS, pygame.K_KP_PLUS):
                             speed = min(speed + SPEED_STEP, SPEED_MAX)
                         elif key in (pygame.K_MINUS, pygame.K_KP_MINUS):
                             speed = max(speed - SPEED_STEP, SPEED_MIN)
-
-                        # ── camera servos ──
                         elif key == pygame.K_UP:
                             tilt = min(tilt + TILT_STEP, 100); bot.set_tilt(tilt)
                         elif key == pygame.K_DOWN:
@@ -184,8 +144,7 @@ def main():
                         elif key == pygame.K_RIGHT:
                             pan = min(pan + PAN_STEP, 180); bot.set_pan(pan)
 
-                        # ── R: 360 capture only (blocking) ──
-                        elif key == pygame.K_r:
+                        elif key == pygame.K_r:        # 360 capture (blocking)
                             bot.stop(); last_cmd = ('stop',)
                             cam = _ensure_cam(cam)
                             bot.set_all_leds_color(Color.BLUE)
@@ -202,8 +161,7 @@ def main():
                                 action = 'capture error'; print('capture error:', e)
                             pygame.event.clear()
 
-                        # ── T: build the cloud from the last R capture (blocking) ──
-                        elif key == pygame.K_t:
+                        elif key == pygame.K_t:        # build the cloud from the last capture
                             bot.stop(); last_cmd = ('stop',)
                             if last_session is None:
                                 action = 'no capture yet (press R)'
@@ -220,8 +178,7 @@ def main():
                                     action = 'build error'; print('build error:', e)
                             pygame.event.clear()
 
-                        # ── Y: open the 3D viewer ──
-                        elif key == pygame.K_y:
+                        elif key == pygame.K_y:        # open the 3D viewer (non-blocking)
                             if last_ply and os.path.exists(last_ply):
                                 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                                 subprocess.Popen([sys.executable,
@@ -231,8 +188,7 @@ def main():
                             else:
                                 action = 'no cloud yet (R then T)'
 
-                        # ── V: single capture in place (blocking) ──
-                        elif key == pygame.K_v:
+                        elif key == pygame.K_v:        # single capture in place (blocking)
                             bot.stop(); last_cmd = ('stop',)
                             cam = _ensure_cam(cam)
                             bot.set_all_leds_color(Color.BLUE)
@@ -250,8 +206,7 @@ def main():
                                 action = 'capture error'; print('capture error:', e)
                             pygame.event.clear()
 
-                # ── held-key motion: poll the real key state every frame ──
-                # (no key-repeat dependence — get_pressed() is the live up/down state)
+                # held-key motion: poll the live up/down state (no key-repeat dependence)
                 pressed = pygame.key.get_pressed()
                 cmd = desired_command(pressed, speed)
                 if cmd != last_cmd:
