@@ -51,12 +51,13 @@ from camera.rs_capture import StereoCapture, default_out_root
 SCAN_SHOTS        = 10       # views per full turn: 10 -> 36 deg each (9->40, 8->45)
 SCAN_ROTATE_SPEED = 40       # motor speed used while rotating
 # <<< CALIBRATE (pulsed): seconds of rotate-pulse per DEGREE, measured the way the scan
-# actually moves (short start/stop pulses), NOT from one long continuous spin. See
-# `python3 pointcloud/scan360.py --calibrate`. This is the ONE knob that sets how far the
-# bot turns per shot, so a wrong value over/under-rotates the whole scan.
-# Estimate below (~3.0 s/rev) is derived from the reported ~820 deg over-rotation of the old
-# vision loop (~9 steps x ~0.75 s spin -> ~120 deg/s). CONFIRM it with --calibrate --turned.
-SCAN_SEC_PER_DEG  = 3.0 / 360.0
+# actually moves (short start/stop pulses), NOT from one long continuous spin. This ONE knob
+# sets how far the bot turns per shot, so a wrong value over/under-rotates the whole scan.
+# Dialed from a real run: at 3.0/360 the 9-step scan turned ~375 deg (~41.7 deg/step), so
+# scaling to the wanted 36 deg/step gives 3.0 * 36 / 41.7 ~= 2.6/360. If it still over/under-
+# shoots, run `python3 pointcloud/scan360.py --calibrate --turned <measured>` and paste the
+# printed number here.
+SCAN_SEC_PER_DEG  = 2.6 / 360.0
 SCAN_SETTLE_PAUSE = 0.4      # seconds to let the chassis stop shaking before a shot
 SCAN_BRAKE_TAP    = 0.0      # seconds of reverse pulse after each step to kill coast (0=off)
 SCAN_DIR          = 1        # +1 = rotate CCW (rotate_left); -1 = CW. Merge follows this.
