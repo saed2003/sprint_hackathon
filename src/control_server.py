@@ -14,6 +14,8 @@ import os
 import sys
 import json
 import math
+import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -29,11 +31,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 STREAM_SERVER_PORT = 8000
 CONTROL_SERVER_PORT = 9000
 CAMERA_SCRIPT = Path(__file__).parent / "camera" / "stream_server.py"
+OLED_SCRIPT = Path(__file__).parent / "oled_message.py"   # OLED splash (its own RasBot)
+STREAM_LOG = Path("/tmp/rasbot_stream.log")    # stream subprocess stdout/stderr
+OLED_LOG = Path("/tmp/rasbot_oled.log")        # OLED subprocess stdout/stderr
 
 # Global state
 stream_process = None
 stream_running = False
 start_time = None
+stream_log = None              # open file handle for the stream subprocess log
+oled_process = None            # OLED splash subprocess (oled_message.py)
+oled_log = None                # open file handle for the OLED subprocess log
 
 # ── Robot driving state ────────────────────────────────────────
 # Fallback speed only; the safe [min, max] band lives in drive.py (clamp_speed).
@@ -264,32 +272,115 @@ last_ply = None            # .ply built by build (T) -> served by the download (
 # StereoCapture's own default resolves to src/captures, so we pass this explicitly.
 CAPTURES_ROOT = str(Path(__file__).resolve().parent.parent / "captures")
 
-# 3D viewer popped up on the Pi desktop the moment a cloud is built. Prefer the
-# Open3D viewer (new_point_cloud/view_ply.py) run with the open3d venv; fall back
-# to the pure numpy/cv2 viewer (pointcloud/view3d.py) if that venv is missing.
-# Needs a display (the Pi desktop / VNC) — silently skipped if there isn't one.
-SRC_DIR   = Path(__file__).resolve().parent
-VIEW_PLY  = SRC_DIR / "new_point_cloud" / "view_ply.py"
-VIEW3D    = SRC_DIR / "pointcloud" / "view3d.py"
-OPEN3D_PY = Path.home() / "open3d313-venv" / "bin" / "python"
+# The 360 merge + the 3D viewer both need Open3D, which the control server's own
+# venv lacks. So they run in a SEPARATE interpreter discovered here: the feature
+# merge (register_360) needs open3d + cv2; the viewer (view_ply) needs just open3d.
+SRC_DIR      = Path(__file__).resolve().parent
+VIEW_PLY     = SRC_DIR / "new_point_cloud" / "view_ply.py"
+VIEW3D       = SRC_DIR / "pointcloud" / "view3d.py"
+REGISTER_360 = SRC_DIR / "new_point_cloud" / "register_360.py"
+# register_360 always writes here (fixed name, overwritten each run); we copy the
+# result into the scan folder so each scan keeps its own cloud (capture contract).
+REGISTER_OUT_PLY = SRC_DIR / "new_point_cloud" / "pointcloud_360.ply"
+REGISTER_OUT_PNG = SRC_DIR / "new_point_cloud" / "pointcloud_360_preview.png"
+
+# Interpreters that may carry Open3D, best first. (o3d-venv has open3d+cv2.)
+_O3D_CANDIDATES = ["/home/sprint/o3d-venv/bin/python",
+                   "/home/sprint/open3d-venv/bin/python",
+                   "/home/sprint/open3d313-venv/bin/python"]
+_register_py = "?"        # cached: interpreter with open3d+cv2 (None if none found)
+_viewer_py = "?"          # cached: interpreter with open3d
+
+
+def _python_with(mods):
+    """First candidate interpreter that can import every module in `mods`."""
+    for py in _O3D_CANDIDATES:
+        if not os.path.exists(py):
+            continue
+        try:
+            r = subprocess.run(
+                [py, "-c", "import importlib.util as u, sys; "
+                 "sys.exit(0 if all(u.find_spec(m) for m in sys.argv[1:]) else 1)",
+                 *mods], timeout=25)
+            if r.returncode == 0:
+                return py
+        except Exception:
+            continue
+    return None
+
+
+def _register_python():
+    global _register_py
+    if _register_py == "?":
+        _register_py = _python_with(["open3d", "cv2", "numpy"])
+    return _register_py
+
+
+def _viewer_python():
+    global _viewer_py
+    if _viewer_py == "?":
+        _viewer_py = _python_with(["open3d"])
+    return _viewer_py
+
+
+def _build_360_register(session):
+    """Build the 360 cloud with new_point_cloud/register_360.py (the merge that
+    works: CLAHE+ORB/SIFT 3D↔3D + pose-graph). Returns the .ply path or raises.
+
+    Runs in the Open3D interpreter; copies the fixed output into the scan folder
+    as merged_360.ply so each scan keeps its own cloud and the download is stable.
+    """
+    py = _register_python()
+    if py is None:
+        raise RuntimeError("no Open3D+cv2 interpreter found (expected ~/o3d-venv)")
+    try:
+        REGISTER_OUT_PLY.unlink()         # clear stale output so we don't reuse it
+    except FileNotFoundError:
+        pass
+    proc = subprocess.run([py, str(REGISTER_360), session],
+                          capture_output=True, text=True, timeout=420)
+    if proc.returncode != 0 or not REGISTER_OUT_PLY.exists():
+        out = ((proc.stdout or "") + (proc.stderr or "")).strip().splitlines()
+        raise RuntimeError(out[-1] if out else f"register_360 exit {proc.returncode}")
+    dst = os.path.join(session, "merged_360.ply")
+    shutil.copy2(str(REGISTER_OUT_PLY), dst)
+    if REGISTER_OUT_PNG.exists():
+        try:
+            shutil.copy2(str(REGISTER_OUT_PNG),
+                         os.path.join(session, "merged_360_preview.png"))
+        except Exception:
+            pass
+    return dst
+
+
+def _build_360_cloud(session, dmod):
+    """Build the 360 .ply, preferring register_360 (Open3D feature merge); on any
+    failure fall back to the numpy scan360 build so a cloud still appears.
+    Returns (ply_path, note). Raises only if BOTH builders fail."""
+    try:
+        return _build_360_register(session), "register_360"
+    except Exception as e:
+        ply = dmod.build_cloud(session, log=lambda *a, **k: None)
+        return ply, f"numpy fallback — register_360 failed: {e}"
 
 
 def _launch_ply_viewer(ply):
     """Pop up an interactive 3D window for a freshly-built cloud (best effort).
 
-    Uses the Open3D view_ply.py (the one the user asked for) via the open3d
-    venv; falls back to the numpy view3d.py. Never raises — a missing display
-    just means no window, while the browser download still works.
+    Uses the Open3D view_ply.py (the one the user asked for); falls back to the
+    numpy view3d.py if no Open3D interpreter is around. Never raises — a missing
+    display just means no window, while the browser download still works.
     """
     if not ply or not os.path.isfile(ply):
         return False
     try:
         env = dict(os.environ)
         env.setdefault("DISPLAY", ":0")          # the Pi desktop session
-        if OPEN3D_PY.exists() and VIEW_PLY.exists():
-            cmd = [str(OPEN3D_PY), str(VIEW_PLY), ply]
+        py = _viewer_python()
+        if py and VIEW_PLY.exists():
+            cmd = [py, str(VIEW_PLY), ply]
         else:
-            cmd = [sys.executable, str(VIEW3D), ply]
+            cmd = [sys.executable, str(VIEW3D), ply]   # numpy viewer, no Open3D
         subprocess.Popen(cmd, env=env,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True
@@ -321,11 +412,11 @@ def _run_capture(kind):
             if not last_session or not os.path.isdir(last_session):
                 capture_status = "error: no scan yet — run a 360 scan (R) first"
                 return
-            capture_status = "building point cloud (this can take a while)..."
-            ply = dmod.build_cloud(last_session, log=lambda *a, **k: None)
+            capture_status = "building 360 cloud (feature registration, can take a minute)..."
+            ply, note = _build_360_cloud(last_session, dmod)
             last_ply = ply
             _launch_ply_viewer(ply)       # pop the interactive window on the Pi
-            capture_status = f"done: built {os.path.basename(ply)} — ready to download"
+            capture_status = f"done: built {os.path.basename(ply)} ({note}) — ready to download"
             return
 
         # scan360 (R legacy), scan (R one-button), single (V) need robot + RealSense.
@@ -349,11 +440,11 @@ def _run_capture(kind):
             last_ply = None               # a new scan invalidates the old build
             if kind == "scan":
                 # One-button flow: spin → 10 shots → build .ply → pop the viewer.
-                capture_status = "building point cloud (this can take a while)..."
-                ply = dmod.build_cloud(session, log=lambda *a, **k: None)
+                capture_status = "building 360 cloud (feature registration, can take a minute)..."
+                ply, note = _build_360_cloud(session, dmod)
                 last_ply = ply
                 _launch_ply_viewer(ply)
-                capture_status = (f"done: {os.path.basename(ply)} — "
+                capture_status = (f"done: {os.path.basename(ply)} ({note}) — "
                                   "opening viewer, download ready")
             else:
                 capture_status = f"done: {os.path.basename(session)} (scan) — press Build (T)"
@@ -420,7 +511,7 @@ def get_local_ip():
 
 def start_stream_server():
     """Start the camera streaming server."""
-    global stream_process, stream_running, start_time
+    global stream_process, stream_running, start_time, stream_log
 
     # Only report "already running" if the process is genuinely still alive.
     # A stale flag with a dead/crashed process would otherwise make the
@@ -434,11 +525,14 @@ def start_stream_server():
         return {"status": "error", "message": f"Camera script not found: {CAMERA_SCRIPT}"}
 
     try:
+        # Log to a FILE, never a PIPE: an un-drained PIPE fills its ~64 KB buffer
+        # and blocks the stream server's prints, which froze the camera thread on
+        # a single frame. A file can't back-pressure the child.
+        stream_log = open(STREAM_LOG, "ab", buffering=0)
         stream_process = subprocess.Popen(
             [sys.executable, str(CAMERA_SCRIPT)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
+            stdout=stream_log,
+            stderr=subprocess.STDOUT,
         )
         stream_running = True
         start_time = time.time()
@@ -489,6 +583,49 @@ def get_stream_status():
     return {"status": "stopped", "message": "Stream server not running"}
 
 
+def start_oled():
+    """Show the OLED splash (oled_message.py) when the robot comes online.
+
+    Runs as its own process with its own RasBot. It only writes the OLED (a
+    different I2C address than the motor board), so it keeps animating while we
+    drive/scan. Best effort — never blocks server startup.
+    """
+    global oled_process, oled_log
+    if oled_process is not None and oled_process.poll() is None:
+        return {"status": "already_running"}
+    if not OLED_SCRIPT.exists():
+        return {"status": "error", "message": f"missing {OLED_SCRIPT}"}
+    try:
+        oled_log = open(OLED_LOG, "ab", buffering=0)
+        oled_process = subprocess.Popen(
+            [sys.executable, str(OLED_SCRIPT)],
+            stdout=oled_log,
+            stderr=subprocess.STDOUT,
+        )
+        return {"status": "started"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def stop_oled():
+    """Stop the OLED splash, asking it to clear the screen first (SIGINT)."""
+    global oled_process
+    if oled_process is None:
+        return
+    try:
+        oled_process.send_signal(signal.SIGINT)   # its KeyboardInterrupt clears the screen
+        try:
+            oled_process.wait(timeout=2)
+        except Exception:
+            oled_process.terminate()
+    except Exception:
+        try:
+            oled_process.kill()
+        except Exception:
+            pass
+    oled_process = None
+
+
 class ControlHandler(BaseHTTPRequestHandler):
     """HTTP request handler for control API."""
 
@@ -524,6 +661,11 @@ class ControlHandler(BaseHTTPRequestHandler):
         elif path == "/api/cloud/download":
             self.send_cloud()
 
+        elif path == "/api/cloud/latest.ply":
+            # Same bytes as download, but served INLINE so the in-browser
+            # WebGL viewer can fetch it instead of triggering a save dialog.
+            self.send_cloud(as_attachment=False)
+
         elif path == "/api/game/state":
             # ── GAME: return current game state ───────────────────────────
             try:
@@ -554,7 +696,7 @@ class ControlHandler(BaseHTTPRequestHandler):
         elif path == "/api/run/start":
             body = self.read_json()
             result = start_run(body.get("mode", "manual"))
-            code = 200 if result["status"] in ("running", "not_implemented") else 500
+            code = 200 if result["status"] == "running" else 500
             self.send_json(code, result)
 
         elif path == "/api/run/stop":
@@ -614,8 +756,8 @@ class ControlHandler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
-    def send_cloud(self):
-        """Stream the last built .ply to the browser as a file download."""
+    def send_cloud(self, as_attachment=True):
+        """Stream the last built .ply — as a download (attachment) or inline (viewer)."""
         if not (last_ply and os.path.isfile(last_ply)):
             self.send_json(404, {"status": "error",
                                  "message": "No cloud built yet — run a 360 scan (R) then Build (T)"})
@@ -624,8 +766,9 @@ class ControlHandler(BaseHTTPRequestHandler):
             size = os.path.getsize(last_ply)
             self.send_response(200)
             self.send_header("Content-Type", "application/octet-stream")
-            self.send_header("Content-Disposition",
-                             f'attachment; filename="{os.path.basename(last_ply)}"')
+            if as_attachment:
+                self.send_header("Content-Disposition",
+                                 f'attachment; filename="{os.path.basename(last_ply)}"')
             self.send_header("Content-Length", str(size))
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
@@ -747,12 +890,16 @@ def main():
     # Safety watchdog: halts the robot if drive commands stop arriving mid-move.
     threading.Thread(target=_watchdog, daemon=True).start()
 
+    # Robot is online -> show the OLED splash (team names / title).
+    start_oled()
+
     try:
         print("Press Ctrl+C to stop\n")
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down...")
         stop_run()
+        stop_oled()
         stop_stream_server()
         if bot is not None:
             try:

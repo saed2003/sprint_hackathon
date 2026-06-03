@@ -509,12 +509,11 @@
     <div class="container">
         <!-- LEFT PANEL -->
         <div class="left-panel">
-            <!-- Mode Display -->
+            <!-- Run controls: manual WASD drive + autonomous black-line follow -->
             <div class="mode-section">
-                <div class="section-title">Current Mode</div>
-                <div class="mode-display manual" id="modeDisplay">MANUAL MODE</div>
-                <div class="mode-info">Press M to toggle mode</div>
+                <div class="section-title">Run Control</div>
                 <button class="btn btn-run" id="runBtn" onclick="toggleRun()">▶ START RUN (Enter)</button>
+                <button class="btn btn-run" id="followBtn" onclick="toggleFollow()" style="margin-top: 8px; background: #9c27b0;">▶ FOLLOW LINE (F)</button>
                 <div class="run-status" id="runStatus">Stopped</div>
             </div>
 
@@ -548,30 +547,19 @@
                         <div class="key speed" onclick="changeSpeed(20)">+<br><span style="font-size: 9px;">Faster</span></div>
                     </div>
 
-                    <!-- Camera servo (pan / tilt) -->
-                    <div class="key-row" style="margin-top: 5px;">
-                        <div class="key servo" onclick="nudgeServo('pan', -10)">◀<br><span style="font-size: 9px;">Pan L</span></div>
-                        <div class="key servo" onclick="nudgeServo('tilt', 10)">▲<br><span style="font-size: 9px;">Tilt Up</span></div>
-                        <div class="key servo" onclick="nudgeServo('tilt', -10)">▼<br><span style="font-size: 9px;">Tilt Dn</span></div>
-                        <div class="key servo" onclick="nudgeServo('pan', 10)">▶<br><span style="font-size: 9px;">Pan R</span></div>
-                    </div>
-
                     <!-- Capture -->
                     <div class="key-row" style="margin-top: 5px;">
                         <div class="key action" data-key="r" onclick="captureScan360()">R<br><span style="font-size: 9px;">360° Scan</span></div>
                         <div class="key action" data-key="v" onclick="captureSingle()">V<br><span style="font-size: 9px;">Capture</span></div>
                     </div>
 
-                    <!-- Point cloud: build + download -->
+                    <!-- Point cloud: build + view + download -->
                     <div class="key-row" style="margin-top: 5px;">
                         <div class="key action" data-key="t" onclick="captureBuild()">T<br><span style="font-size: 9px;">Build Cloud</span></div>
+                        <div class="key action" id="view3dKey" onclick="viewCloud()">👁<br><span style="font-size: 9px;">View 3D</span></div>
                         <div class="key action" id="downloadKey" onclick="downloadCloud()">⬇<br><span style="font-size: 9px;">Download</span></div>
                     </div>
 
-                    <!-- Mode Switch -->
-                    <div class="key-row" style="margin-top: 5px;">
-                        <div class="key mode" data-key="m">M<br><span style="font-size: 9px;">Toggle Mode</span></div>
-                    </div>
                 </div>
             </div>
 
@@ -608,8 +596,8 @@
                         <span class="hotkey-key">T / Y</span>
                     </div>
                     <div class="hotkey-item mode">
-                        <span class="hotkey-description">Switch Manual/Auto</span>
-                        <span class="hotkey-key">M</span>
+                        <span class="hotkey-description">Follow Black Line (toggle)</span>
+                        <span class="hotkey-key">F</span>
                     </div>
                     <div class="hotkey-item">
                         <span class="hotkey-description">Start / Stop Run</span>
@@ -663,11 +651,11 @@
 
         // State management
         const state = {
-            currentMode: 'manual',
             activeKeys: new Set(),
             keysDown: new Set(),
             streamUrl: null,
-            runActive: false,      // is a run armed (robot accepting drive commands)?
+            runActive: false,      // manual run armed (robot accepting drive commands)?
+            following: false,      // autonomous black-line follower active?
             speed: 120             // current drive speed (40-255), adjust with +/-
         };
 
@@ -689,7 +677,6 @@
             controlServerInput.value = config.controlServer;
             streamUrlInput.value = config.streamServer;
             document.getElementById('speedValue').textContent = state.speed;
-            updateModeDisplay();
             checkControlServerHealth();
             // Live view is up the moment main.py launches — show it automatically
             // (start is idempotent server-side, so this is safe to call on load).
@@ -844,34 +831,86 @@
             el.style.color = on ? '#4caf50' : '#aaa';
         }
 
-        // The ON/OFF button: starts/stops the chosen mode's run.
+        // START/STOP RUN button: arms MANUAL WASD driving. Manual drive and the
+        // line-follower are mutually exclusive (one bus owner), so starting one
+        // stops the other.
         function toggleRun() {
-            if (!state.runActive) {
-                // Both modes are supported now (manual WASD + autonomous tape-follow).
-                updateRunStatus('🔄 Starting run...', false);
-                fetch(`${controlBase()}/api/run/start`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ mode: state.currentMode })
-                })
-                .then(r => r.json())
-                .then(data => {
-                    if (data.status === 'running') {
-                        setRunActive(true);
-                    } else {
-                        updateRunStatus('✗ ' + (data.message || 'Failed to start'), false);
-                    }
-                })
-                .catch(() => updateRunStatus('✗ Control server not reachable', false));
+            if (state.runActive) { stopRun(); return; }
+            if (state.following) {
+                // stop the follower first, then arm manual
+                fetch(`${controlBase()}/api/run/stop`, { method: 'POST' })
+                    .catch(() => {})
+                    .finally(() => { setFollowing(false); startManual(); });
             } else {
-                stopRun();
+                startManual();
             }
+        }
+
+        function startManual() {
+            updateRunStatus('🔄 Starting run...', false);
+            fetch(`${controlBase()}/api/run/start`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mode: 'manual' })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'running') setRunActive(true);
+                else updateRunStatus('✗ ' + (data.message || 'Failed to start'), false);
+            })
+            .catch(() => updateRunStatus('✗ Control server not reachable', false));
         }
 
         function stopRun() {
             fetch(`${controlBase()}/api/run/stop`, { method: 'POST' })
                 .catch(() => {})
                 .finally(() => setRunActive(false));
+        }
+
+        // FOLLOW LINE button / F key: toggle the autonomous black-line follower.
+        function toggleFollow() {
+            if (state.following) {
+                fetch(`${controlBase()}/api/run/stop`, { method: 'POST' })
+                    .catch(() => {})
+                    .finally(() => setFollowing(false));
+                return;
+            }
+            const begin = () => {
+                updateRunStatus('🔄 Starting line follow...', false);
+                fetch(`${controlBase()}/api/run/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mode: 'autonomous' })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status === 'running') setFollowing(true);
+                    else updateRunStatus('✗ ' + (data.message || 'Failed to start'), false);
+                })
+                .catch(() => updateRunStatus('✗ Control server not reachable', false));
+            };
+            if (state.runActive) {
+                // stop manual driving (and its heartbeat) before the follower owns the bus
+                fetch(`${controlBase()}/api/run/stop`, { method: 'POST' })
+                    .catch(() => {})
+                    .finally(() => { setRunActive(false); begin(); });
+            } else {
+                begin();
+            }
+        }
+
+        function setFollowing(on) {
+            state.following = on;
+            const btn = document.getElementById('followBtn');
+            if (on) {
+                btn.textContent = '■ STOP FOLLOW (F)';
+                btn.style.background = '#f44336';
+                updateRunStatus('● FOLLOWING LINE — press F to stop', true);
+            } else {
+                btn.textContent = '▶ FOLLOW LINE (F)';
+                btn.style.background = '#9c27b0';
+                updateRunStatus('Stopped', false);
+            }
         }
 
         function setRunActive(on) {
@@ -895,7 +934,7 @@
 
         // Send the currently-held movement keys + speed to the robot.
         function sendDrive() {
-            if (!state.runActive || state.currentMode !== 'manual') return;
+            if (!state.runActive) return;
             const keys = [...state.keysDown].filter(k => MOVE_KEYS.includes(k));
             fetch(`${controlBase()}/api/drive`, {
                 method: 'POST',
@@ -917,8 +956,8 @@
         // ── Captures (R = 360° scan, V = single) ────────────────────────
         function captureScan360() {
             if (!confirm('360° scan will ROTATE the robot a full turn in place.\nMake sure it has room. Continue?')) return;
-            // One button: spin → 10 shots → build .ply. The Pi pops view_ply.py,
-            // and the browser offers the file for download once it's ready.
+            // One button: spin → 10 shots → build .ply → open the 3D view in a new
+            // tab (the Pi also pops view_ply.py; ⬇ Download stays available too).
             postCapture('scan', '360° scan + build', true);
         }
 
@@ -957,13 +996,13 @@
             .catch(() => {});
         }
 
-        function postCapture(kind, label, autoDownload) {
+        function postCapture(kind, label, viewOnDone) {
             updateRunStatus('🔄 ' + label + ' started...', false);
             fetch(`${controlBase()}/api/capture/${kind}`, { method: 'POST' })
                 .then(r => r.json())
                 .then(data => {
                     if (data.status === 'started') {
-                        pollCapture(!!autoDownload);
+                        pollCapture(!!viewOnDone);
                     } else if (data.status === 'busy') {
                         updateRunStatus('⚠ ' + data.message, false);
                     } else {
@@ -973,17 +1012,17 @@
                 .catch(() => updateRunStatus('✗ Control server not reachable', false));
         }
 
-        function pollCapture(autoDownload) {
+        function pollCapture(viewOnDone) {
             fetch(`${controlBase()}/api/capture/status`)
                 .then(r => r.json())
                 .then(data => {
                     updateRunStatus((data.busy ? '⏳ ' : '✓ ') + data.status, false);
                     if (data.busy) {
-                        setTimeout(() => pollCapture(autoDownload), 800);
+                        setTimeout(() => pollCapture(viewOnDone), 800);
                     } else {
-                        // Build finished: when this flow produced a cloud, hand it to
-                        // the browser so the operator can save it to their laptop.
-                        if (autoDownload) autoDownloadCloud();
+                        // Build finished: when this flow produced a cloud, open the
+                        // interactive 3D view in a new tab (download stays available).
+                        if (viewOnDone) onCloudReady();
                         if (state.runActive) {
                             // restore the running banner once the capture finishes
                             setTimeout(() => updateRunStatus(`● RUNNING — speed ${state.speed}`, true), 2500);
@@ -993,16 +1032,35 @@
                 .catch(() => {});
         }
 
-        // Pop the browser's download dialog for the freshly built .ply (the Pi
-        // separately opens view_ply.py in an interactive 3D window).
-        function autoDownloadCloud() {
+        // The viewer page is served by the dashboard's OWN static server; pass it
+        // the control API host so it can fetch the .ply (handles a custom IP too).
+        function cloudViewerUrl() {
+            return `cloud_viewer.html?api=${encodeURIComponent(config.controlServer)}`;
+        }
+
+        // Open the interactive WebGL cloud in a NEW TAB. Called from a click, so
+        // the browser treats it as a user gesture and won't block the popup.
+        function viewCloud() {
             fetch(`${controlBase()}/api/cloud/status`)
                 .then(r => r.json())
                 .then(d => {
-                    if (d.has_cloud) {
-                        updateRunStatus('⬇ Cloud ready — downloading ' + d.name, false);
-                        window.location.href = `${controlBase()}/api/cloud/download`;
-                    }
+                    if (d.has_cloud) window.open(cloudViewerUrl(), '_blank');
+                    else updateRunStatus('⚠ No cloud yet — Scan (R) then Build (T)', false);
+                })
+                .catch(() => updateRunStatus('✗ Control server not reachable', false));
+        }
+
+        // When a fresh .ply finishes, try to open the 3D viewer in a new tab.
+        // Auto-open from a poll callback may be blocked (not a user gesture); if
+        // so, leave a clear hint to use the 👁 View 3D button.
+        function onCloudReady() {
+            fetch(`${controlBase()}/api/cloud/status`)
+                .then(r => r.json())
+                .then(d => {
+                    if (!d.has_cloud) return;
+                    const w = window.open(cloudViewerUrl(), '_blank');
+                    if (w) updateRunStatus('✓ ' + d.name + ' — opened 3D view in a new tab', false);
+                    else   updateRunStatus('✓ ' + d.name + ' ready — click 👁 View 3D (or ⬇ Download)', false);
                 })
                 .catch(() => {});
         }
@@ -1049,11 +1107,8 @@
                 keyElement.classList.add('pressed');
             }
 
-            if (key === 'm') {
-                // Switching mode must halt the active run first (one bus owner).
-                if (state.runActive) stopRun();
-                state.currentMode = state.currentMode === 'manual' ? 'autonomous' : 'manual';
-                updateModeDisplay();
+            if (key === 'f') {
+                toggleFollow();          // toggle autonomous black-line following
             } else if (key === 'r') {
                 captureScan360();
             } else if (key === 'v') {
@@ -1108,26 +1163,7 @@
             keyElement.addEventListener('mouseleave', release);
             keyElement.addEventListener('touchstart', press, { passive: false });
             keyElement.addEventListener('touchend', release);
-
-            keyElement.addEventListener('click', () => {
-                if (key === 'm') {
-                    if (state.runActive) stopRun();
-                    state.currentMode = state.currentMode === 'manual' ? 'autonomous' : 'manual';
-                    updateModeDisplay();
-                }
-            });
         });
-
-        function updateModeDisplay() {
-            const modeDisplay = document.getElementById('modeDisplay');
-            if (state.currentMode === 'manual') {
-                modeDisplay.textContent = 'MANUAL MODE';
-                modeDisplay.className = 'mode-display manual';
-            } else {
-                modeDisplay.textContent = 'AUTONOMOUS MODE';
-                modeDisplay.className = 'mode-display autonomous';
-            }
-        }
 
         function logAction(key) {
             const actions = {

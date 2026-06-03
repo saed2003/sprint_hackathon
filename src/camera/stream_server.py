@@ -6,6 +6,7 @@ Access the stream at: http://localhost:8000/stream.mjpg
 Run on the Raspberry Pi (or any machine with the camera connected):
     python stream_server.py
 """
+import os
 import sys
 import time
 import cv2
@@ -14,8 +15,14 @@ import socket
 from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 import threading
 
-W, H, FPS = 1280, 720, 30
-CAM_INDEX = 0
+# Default 640x480: a cheap USB webcam on the Pi's USB power drops off the bus
+# (errno 19 "No such device") at 720p30 MJPG, freezing the feed. 480p is far
+# lighter and reliable. Bump back up via env if your cam/power can take it
+# (e.g. STREAM_W=1280 STREAM_H=720), or point at another camera with STREAM_CAM.
+W   = int(os.environ.get("STREAM_W", "640"))
+H   = int(os.environ.get("STREAM_H", "480"))
+FPS = int(os.environ.get("STREAM_FPS", "30"))
+CAM_INDEX = int(os.environ.get("STREAM_CAM", "0"))
 
 # Global camera and frame state
 camera_lock = threading.Lock()
@@ -48,58 +55,87 @@ def configure(cap, use_mjpg):
 
 
 def camera_thread():
-    """Capture frames from camera and store in global variable."""
+    """Capture frames into latest_frame, reopening the device when it stalls.
+
+    Hardened against the freeze bug: a transient cap.read() failure used to
+    busy-loop forever and freeze the stream on a single frame. Now we sleep on
+    failure, reopen the device after a sustained stall, and rate-limit logging
+    so a never-drained stdout pipe can't block (and freeze) the capture thread.
+    """
     global latest_frame, camera_ready
 
-    cap = open_cam(CAM_INDEX)
-    if not cap.isOpened():
-        print(f"ERROR: Cannot open camera index {CAM_INDEX}")
-        return
-
-    # Try MJPG first; fallback to native format if frames are black
-    if configure(cap, use_mjpg=True):
-        mode = "MJPG"
-    else:
-        cap.release()
+    while True:                                    # (re)open loop — never give up
         cap = open_cam(CAM_INDEX)
-        configure(cap, use_mjpg=False)
-        mode = "native"
+        if not cap or not cap.isOpened():
+            print(f"camera: cannot open index {CAM_INDEX}; retrying in 2s", flush=True)
+            time.sleep(2)
+            continue
 
-    aw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    ah = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    afp = cap.get(cv2.CAP_PROP_FPS)
-    print(f"✓ Camera open: {aw}x{ah} @ {afp:.0f}fps mode={mode}")
+        # Try MJPG first; fall back to native format if frames are black.
+        if configure(cap, use_mjpg=True):
+            mode = "MJPG"
+        else:
+            cap.release()
+            cap = open_cam(CAM_INDEX)
+            configure(cap, use_mjpg=False)
+            mode = "native"
 
-    camera_ready = True
-    prev = time.time()
-    fps = 0.0
+        aw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        ah = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        afp = cap.get(cv2.CAP_PROP_FPS)
+        print(f"✓ Camera open: {aw}x{ah} @ {afp:.0f}fps mode={mode}", flush=True)
 
-    try:
-        while True:
-            ok, frame = cap.read()
-            if not ok:
-                print("Frame grab failed; retrying...")
-                continue
+        camera_ready = True
+        prev = time.time()
+        fps = 0.0
+        fails = 0
+        last_err = 0.0
 
-            # Calculate FPS
-            now = time.time()
-            dt = now - prev
-            prev = now
-            if dt > 0:
-                fps = 0.9 * fps + 0.1 * (1.0 / dt)
+        try:
+            while True:
+                try:
+                    ok, frame = cap.read()
+                except Exception:
+                    ok, frame = False, None
 
-            # Add FPS text overlay
-            cv2.putText(frame, f"{fps:4.1f} FPS", (10, 25),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                if not ok or frame is None:
+                    fails += 1
+                    now = time.time()
+                    if now - last_err > 1.0:                  # rate-limit the log
+                        print(f"camera: frame grab failed (x{fails})", flush=True)
+                        last_err = now
+                    if fails >= 30:                           # ~1s stalled -> reopen
+                        print("camera: stalled; reopening device", flush=True)
+                        break
+                    time.sleep(0.03)                          # never busy-spin
+                    continue
 
-            # Store latest frame
-            with camera_lock:
-                latest_frame = frame.copy()
+                fails = 0
+                now = time.time()
+                dt = now - prev
+                prev = now
+                if dt > 0:
+                    fps = 0.9 * fps + 0.1 * (1.0 / dt)
 
-    except KeyboardInterrupt:
-        print("Shutting down camera...")
-    finally:
-        cap.release()
+                cv2.putText(frame, f"{fps:4.1f} FPS", (10, 25),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+                with camera_lock:
+                    latest_frame = frame.copy()
+
+        except KeyboardInterrupt:
+            print("Shutting down camera...", flush=True)
+            try:
+                cap.release()
+            except Exception:
+                pass
+            return
+        finally:
+            try:
+                cap.release()
+            except Exception:
+                pass
+        time.sleep(0.5)                            # brief pause before reopening
 
 
 class MJPEGHandler(BaseHTTPRequestHandler):
