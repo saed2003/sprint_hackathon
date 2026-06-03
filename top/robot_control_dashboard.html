@@ -691,6 +691,9 @@
             document.getElementById('speedValue').textContent = state.speed;
             updateModeDisplay();
             checkControlServerHealth();
+            // Live view is up the moment main.py launches — show it automatically
+            // (start is idempotent server-side, so this is safe to call on load).
+            connectStream();
         });
 
         function toggleConfig() {
@@ -844,10 +847,7 @@
         // The ON/OFF button: starts/stops the chosen mode's run.
         function toggleRun() {
             if (!state.runActive) {
-                if (state.currentMode !== 'manual') {
-                    updateRunStatus('⚠ Only MANUAL mode works for now', false);
-                    return;
-                }
+                // Both modes are supported now (manual WASD + autonomous tape-follow).
                 updateRunStatus('🔄 Starting run...', false);
                 fetch(`${controlBase()}/api/run/start`, {
                     method: 'POST',
@@ -917,15 +917,17 @@
         // ── Captures (R = 360° scan, V = single) ────────────────────────
         function captureScan360() {
             if (!confirm('360° scan will ROTATE the robot a full turn in place.\nMake sure it has room. Continue?')) return;
-            postCapture('scan360', '360° scan');
+            // One button: spin → 10 shots → build .ply. The Pi pops view_ply.py,
+            // and the browser offers the file for download once it's ready.
+            postCapture('scan', '360° scan + build', true);
         }
 
         function captureSingle() {
-            postCapture('single', 'single capture');
+            postCapture('single', 'single capture', false);
         }
 
         function captureBuild() {
-            postCapture('build', 'cloud build');   // T — merge last scan into a .ply
+            postCapture('build', 'cloud build', true);   // T — merge last scan into a .ply
         }
 
         // Y replacement: download the built point cloud to THIS device.
@@ -955,13 +957,13 @@
             .catch(() => {});
         }
 
-        function postCapture(kind, label) {
+        function postCapture(kind, label, autoDownload) {
             updateRunStatus('🔄 ' + label + ' started...', false);
             fetch(`${controlBase()}/api/capture/${kind}`, { method: 'POST' })
                 .then(r => r.json())
                 .then(data => {
                     if (data.status === 'started') {
-                        pollCapture();
+                        pollCapture(!!autoDownload);
                     } else if (data.status === 'busy') {
                         updateRunStatus('⚠ ' + data.message, false);
                     } else {
@@ -971,16 +973,35 @@
                 .catch(() => updateRunStatus('✗ Control server not reachable', false));
         }
 
-        function pollCapture() {
+        function pollCapture(autoDownload) {
             fetch(`${controlBase()}/api/capture/status`)
                 .then(r => r.json())
                 .then(data => {
                     updateRunStatus((data.busy ? '⏳ ' : '✓ ') + data.status, false);
                     if (data.busy) {
-                        setTimeout(pollCapture, 800);
-                    } else if (state.runActive) {
-                        // restore the running banner once the capture finishes
-                        setTimeout(() => updateRunStatus(`● RUNNING — speed ${state.speed}`, true), 2500);
+                        setTimeout(() => pollCapture(autoDownload), 800);
+                    } else {
+                        // Build finished: when this flow produced a cloud, hand it to
+                        // the browser so the operator can save it to their laptop.
+                        if (autoDownload) autoDownloadCloud();
+                        if (state.runActive) {
+                            // restore the running banner once the capture finishes
+                            setTimeout(() => updateRunStatus(`● RUNNING — speed ${state.speed}`, true), 2500);
+                        }
+                    }
+                })
+                .catch(() => {});
+        }
+
+        // Pop the browser's download dialog for the freshly built .ply (the Pi
+        // separately opens view_ply.py in an interactive 3D window).
+        function autoDownloadCloud() {
+            fetch(`${controlBase()}/api/cloud/status`)
+                .then(r => r.json())
+                .then(d => {
+                    if (d.has_cloud) {
+                        updateRunStatus('⬇ Cloud ready — downloading ' + d.name, false);
+                        window.location.href = `${controlBase()}/api/cloud/download`;
                     }
                 })
                 .catch(() => {});
@@ -1029,8 +1050,7 @@
             }
 
             if (key === 'm') {
-                // Switching mode mid-run is unsafe (autonomous isn't implemented),
-                // so stop any active run when toggling.
+                // Switching mode must halt the active run first (one bus owner).
                 if (state.runActive) stopRun();
                 state.currentMode = state.currentMode === 'manual' ? 'autonomous' : 'manual';
                 updateModeDisplay();

@@ -53,17 +53,28 @@ def _serve_dashboard():
 
 
 def cmd_web():
-    """Serve the dashboard + the control API (control spawns the stream on demand)."""
+    """Serve the dashboard + control API, and auto-start the live webcam stream.
+
+    The stream comes up at launch (not on Connect) so the dashboard shows video
+    the moment it's opened — the control API still stops it cleanly on Ctrl+C.
+    """
     import control_server
 
     dash_port = _serve_dashboard()
+    # Live view starts with the system, per spec — the dashboard auto-connects to it.
+    try:
+        res = control_server.start_stream_server()
+        if res.get("status") not in ("started", "already_running"):
+            print(f"  (live stream did not start: {res.get('message')})")
+    except Exception as e:
+        print(f"  (live stream auto-start failed: {e})")
     ip = _local_ip()
     print("=" * 60)
     print("Street View Robot — WEB")
     print("=" * 60)
     print(f"Dashboard:   http://{ip}:{dash_port}/   (open this in a browser)")
     print(f"Control API: http://{ip}:{CONTROL_PORT}/")
-    print(f"Stream:      http://{ip}:{STREAM_PORT}/stream.mjpg  (after Connect)")
+    print(f"Stream:      http://{ip}:{STREAM_PORT}/stream.mjpg  (live, auto-started)")
     print("=" * 60)
     control_server.main()         # binds :9000 and blocks until Ctrl+C
 

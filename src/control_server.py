@@ -56,6 +56,12 @@ run_mode = 'manual'
 last_cmd = None            # last motion command tuple sent to the bot
 last_cmd_time = 0.0        # wall-clock of the last drive command (for the watchdog)
 
+# Autonomous line-follow run (spec §4.2 — the web hook for Mode 2). A background
+# thread runs tape_following.line_follow on the shared bot; setting this event
+# stops it cleanly so manual drive and the follower never both own the bus.
+line_stop_event = None
+line_thread = None
+
 # Camera pan/tilt servo state. The step size + clamp live in drive.py
 # (nudge_servo); we just hold the current angle so nudges accumulate.
 pan_angle = 90             # 0-180, default centered
@@ -154,12 +160,28 @@ def servo(axis, delta):
     return {"status": "ok", "axis": axis, "value": val}
 
 
+def _run_line_follow(b, stop_event):
+    """Background worker: run the tape follower until stop_event is set."""
+    try:
+        from tape_following import line_follow
+        # cam=None: the stop-marker scan is disabled (SKIP_SCAN), so the follower
+        # never needs the D405 — leaving it free for live capture.
+        line_follow.run(b, cam=None, stop_event=stop_event)
+    except Exception as e:
+        print("line-follow error:", e)
+    finally:
+        with robot_lock:
+            try:
+                b.stop()
+            except Exception:
+                pass
+
+
 def start_run(mode):
-    """Arm a run in the given mode. Only 'manual' is implemented for now."""
-    global run_active, run_mode, last_cmd
-    if mode != 'manual':
-        return {"status": "not_implemented",
-                "message": f"'{mode}' mode is not implemented yet — only manual mode works."}
+    """Arm a run. 'manual' = WASD teleop; 'autonomous' = tape line-following."""
+    global run_active, run_mode, last_cmd, line_stop_event, line_thread
+    if mode not in ('manual', 'autonomous'):
+        return {"status": "error", "message": f"Unknown mode '{mode}'"}
     b, err = get_bot()
     if b is None:
         return {"status": "error", "message": f"Robot unavailable: {err}"}
@@ -174,13 +196,24 @@ def start_run(mode):
             b.beep(0.1)
         except Exception:
             pass
+    if mode == 'autonomous':
+        # The follower drives the bot directly in its own thread (it doesn't go
+        # through /api/drive, so the drive watchdog stays out of its way).
+        line_stop_event = threading.Event()
+        line_thread = threading.Thread(
+            target=_run_line_follow, args=(b, line_stop_event), daemon=True)
+        line_thread.start()
+        return {"status": "running", "mode": mode,
+                "message": "Autonomous run started — place the robot on the tape"}
     return {"status": "running", "mode": mode,
             "message": "Manual run started — drive with W/A/S/D and Q/E"}
 
 
 def stop_run():
-    """Disarm: halt the robot and stop accepting drive commands."""
-    global run_active, last_cmd
+    """Disarm: halt the robot, stop the follower (if any), stop accepting drive."""
+    global run_active, last_cmd, line_stop_event, line_thread
+    if line_stop_event is not None:        # ask the follower to exit first
+        line_stop_event.set()
     b, _ = get_bot()
     with robot_lock:
         run_active = False
@@ -191,6 +224,12 @@ def stop_run():
                 b.leds_off()
             except Exception:
                 pass
+    # Join the follower OUTSIDE the lock — it grabs robot_lock on its way out.
+    t = line_thread
+    if t is not None:
+        t.join(timeout=2.0)
+    line_thread = None
+    line_stop_event = None
     return {"status": "stopped", "message": "Run stopped — robot halted"}
 
 
@@ -225,6 +264,38 @@ last_ply = None            # .ply built by build (T) -> served by the download (
 # StereoCapture's own default resolves to src/captures, so we pass this explicitly.
 CAPTURES_ROOT = str(Path(__file__).resolve().parent.parent / "captures")
 
+# 3D viewer popped up on the Pi desktop the moment a cloud is built. Prefer the
+# Open3D viewer (new_point_cloud/view_ply.py) run with the open3d venv; fall back
+# to the pure numpy/cv2 viewer (pointcloud/view3d.py) if that venv is missing.
+# Needs a display (the Pi desktop / VNC) — silently skipped if there isn't one.
+SRC_DIR   = Path(__file__).resolve().parent
+VIEW_PLY  = SRC_DIR / "new_point_cloud" / "view_ply.py"
+VIEW3D    = SRC_DIR / "pointcloud" / "view3d.py"
+OPEN3D_PY = Path.home() / "open3d313-venv" / "bin" / "python"
+
+
+def _launch_ply_viewer(ply):
+    """Pop up an interactive 3D window for a freshly-built cloud (best effort).
+
+    Uses the Open3D view_ply.py (the one the user asked for) via the open3d
+    venv; falls back to the numpy view3d.py. Never raises — a missing display
+    just means no window, while the browser download still works.
+    """
+    if not ply or not os.path.isfile(ply):
+        return False
+    try:
+        env = dict(os.environ)
+        env.setdefault("DISPLAY", ":0")          # the Pi desktop session
+        if OPEN3D_PY.exists() and VIEW_PLY.exists():
+            cmd = [str(OPEN3D_PY), str(VIEW_PLY), ply]
+        else:
+            cmd = [sys.executable, str(VIEW3D), ply]
+        subprocess.Popen(cmd, env=env,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:
+        return False
+
 
 def get_cam():
     """Lazily create the StereoCapture (RealSense D405)."""
@@ -253,10 +324,11 @@ def _run_capture(kind):
             capture_status = "building point cloud (this can take a while)..."
             ply = dmod.build_cloud(last_session, log=lambda *a, **k: None)
             last_ply = ply
+            _launch_ply_viewer(ply)       # pop the interactive window on the Pi
             capture_status = f"done: built {os.path.basename(ply)} — ready to download"
             return
 
-        # scan360 (R) and single (V) need the robot + RealSense camera.
+        # scan360 (R legacy), scan (R one-button), single (V) need robot + RealSense.
         b, err = get_bot()
         if b is None:
             capture_status = f"error: robot unavailable ({err})"
@@ -270,12 +342,21 @@ def _run_capture(kind):
             b.set_all_leds_color(Color.BLUE)
         except Exception:
             pass
-        if kind == "scan360":
+        if kind in ("scan360", "scan"):
             capture_status = "360 scan: rotating + capturing..."
             session = dmod.scan360_capture(b, c, out_root=CAPTURES_ROOT, log=lambda *a, **k: None)
             last_session = session
             last_ply = None               # a new scan invalidates the old build
-            capture_status = f"done: {os.path.basename(session)} (scan) — press Build (T)"
+            if kind == "scan":
+                # One-button flow: spin → 10 shots → build .ply → pop the viewer.
+                capture_status = "building point cloud (this can take a while)..."
+                ply = dmod.build_cloud(session, log=lambda *a, **k: None)
+                last_ply = ply
+                _launch_ply_viewer(ply)
+                capture_status = (f"done: {os.path.basename(ply)} — "
+                                  "opening viewer, download ready")
+            else:
+                capture_status = f"done: {os.path.basename(session)} (scan) — press Build (T)"
         else:  # single
             capture_status = "capturing single frame..."
             folder = dmod.single_capture(c, out_root=CAPTURES_ROOT)
@@ -308,8 +389,13 @@ def _run_capture(kind):
 def start_capture(kind):
     """Kick off a capture in the background if one isn't already running."""
     global capture_busy, capture_status
-    if kind not in ("scan360", "single", "build"):
+    if kind not in ("scan360", "scan", "single", "build"):
         return {"status": "error", "message": f"Unknown capture '{kind}'"}
+    # While the line-follower owns the bus, a scan/single would fight it for the
+    # motors (build is pure compute, so it's fine). Stop the run first.
+    if run_active and run_mode == "autonomous" and kind != "build":
+        return {"status": "busy",
+                "message": "Stop the autonomous run before capturing"}
     with capture_lock:
         if capture_busy:
             return {"status": "busy", "message": "A capture is already running",
@@ -470,6 +556,10 @@ class ControlHandler(BaseHTTPRequestHandler):
             body = self.read_json()
             result = drive(body.get("keys", []), body.get("speed", DRIVE_SPEED_DEFAULT))
             self.send_json(200, result)
+
+        elif path == "/api/capture/scan":
+            # One-button R: spin → 10 shots → build .ply → pop the 3D viewer.
+            self.send_json(200, start_capture("scan"))
 
         elif path == "/api/capture/scan360":
             self.send_json(200, start_capture("scan360"))
