@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # Configuration
 STREAM_SERVER_PORT = 8000
-CONTROL_SERVER_PORT = 9001
+CONTROL_SERVER_PORT = 9000
 CAMERA_SCRIPT = Path(__file__).parent / "camera" / "stream_server.py"
 OLED_SCRIPT = Path(__file__).parent / "oled_message.py"   # OLED splash (its own RasBot)
 STREAM_LOG = Path("/tmp/rasbot_stream.log")    # stream subprocess stdout/stderr

@@ -57,6 +57,11 @@ STRAFE_SPEED  = 40          # sideways strafe speed (orbit advance)
 SEC_PER_DEG   = 3.0 / 540   # in-place rotation timing (calibrated: 540 deg in 3.0s @ speed 40)
 SEC_PER_M     = 3.0 / 1.2   # forward timing (calibrated: 1.2 m in 3.0s @ speed 40)
 STRAFE_EFF    = 0.7         # mecanum strafe covers ~70% of forward distance per second
+STRAFE_GAIN   = 1.3         # drive THIS much further per step than the geometric chord, so each
+                            # stop advances a bit MORE around the object. The strafe slips, so the
+                            # camera-measured advance lags the nominal step (often ~half) — this
+                            # nudges it back up -> bigger steps, fewer shots. Raise for bigger
+                            # steps; lower toward 1.0 for smaller steps + more overlap (safer ICP).
 SETTLE        = 0.4         # pause for the chassis to settle before a shot
 ORBIT_DIR     = 1           # +1 = strafe/orbit one way, -1 the other (merge --dir must match)
 
@@ -234,12 +239,14 @@ def orbit_strafe(bot, chord, log=print):
     """Advance one step AROUND the object by strafing sideways (mecanum) by `chord`
     metres — that's tangent to the orbit, so the camera keeps looking at the object
     instead of driving into it. The next face_object() re-centres the small residual
-    bearing change. Strafe covers ~STRAFE_EFF of the forward distance per second."""
-    t = (SEC_PER_M / max(0.1, STRAFE_EFF)) * chord
+    bearing change. Strafe covers ~STRAFE_EFF of the forward distance per second, and we
+    drive STRAFE_GAIN x the chord so each step advances a bit more (strafe slip eats some)."""
+    dist = chord * STRAFE_GAIN
+    t = (SEC_PER_M / max(0.1, STRAFE_EFF)) * dist
     (bot.right if ORBIT_DIR >= 0 else bot.left)(STRAFE_SPEED)
     time.sleep(t)
     bot.stop()
-    log(f"    orbit strafe: {'right' if ORBIT_DIR >= 0 else 'left'} {chord*100:.1f}cm ({t:.2f}s)")
+    log(f"    orbit strafe: {'right' if ORBIT_DIR >= 0 else 'left'} {dist*100:.1f}cm ({t:.2f}s)")
 
 
 def reacquire_object(bot, cam, log=print):
