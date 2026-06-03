@@ -49,6 +49,7 @@ from setup_and_api.api import RasBot, Color
 from camera.rs_capture import StereoCapture
 from pointcloud import scan360
 from tape_following import best_follow as lf
+from tape_following import vision_follow as vf
 
 import pygame
 
@@ -104,29 +105,54 @@ def _ensure_cam(cam):
     return cam if cam is not None else StereoCapture()
 
 
-def draw_hud(screen, font, action, speed, pan, tilt, follow_mode):
+def draw_hud(screen, font, action, speed, pan, tilt, follow_mode,
+             vision_mode=False, vision_frame=None):
     screen.fill((18, 18, 22))
-    follow_color = (80, 200, 255) if follow_mode else (120, 220, 120)
-    follow_label = '*** LINE FOLLOWING (F=stop) ***' if follow_mode else 'manual drive'
+
+    # Determine follow status label
+    if vision_mode:
+        follow_color = (255, 165, 0)  # orange
+        follow_label = '*** VISION FOLLOW (G=stop) ***'
+    elif follow_mode:
+        follow_color = (80, 200, 255)  # blue
+        follow_label = '*** LINE FOLLOWING (F=stop) ***'
+    else:
+        follow_color = (120, 220, 120)  # green
+        follow_label = 'manual drive'
+
     lines = [
-        (f'RasBot  —  {follow_label}',                           follow_color),
-        (f'action: {action}',                                     (235, 235, 235)),
-        (f'speed: {speed}    pan: {pan}    tilt: {tilt}',        (200, 200, 210)),
-        ('W/A/S/D move   Q/E rotate   F=follow   +/- speed',     (150, 150, 160)),
-        ('R capture   T build   Y view   V single   ESC quit',   (150, 150, 160)),
-        ('(click this window so it has keyboard focus)',           (120, 120, 130)),
+        (f'RasBot  —  {follow_label}',                                follow_color),
+        (f'action: {action}',                                         (235, 235, 235)),
+        (f'speed: {speed}    pan: {pan}    tilt: {tilt}',            (200, 200, 210)),
+        ('W/A/S/D move   Q/E rotate   F=IR follow   G=vision +/- speed', (150, 150, 160)),
+        ('R capture   T build   Y view   V single   ESC quit',       (150, 150, 160)),
+        ('(click this window so it has keyboard focus)',              (120, 120, 130)),
     ]
     y = 14
     for text, color in lines:
         screen.blit(font.render(text, True, color), (16, y))
         y += 28
+
+    # Vision camera overlay (bottom-right corner)
+    if vision_mode and vision_frame is not None:
+        import cv2
+        small = cv2.resize(vision_frame, (vf.PREVIEW_W, vf.PREVIEW_H))
+        rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+        surf = pygame.image.frombuffer(rgb.tobytes(), (vf.PREVIEW_W, vf.PREVIEW_H), 'RGB')
+        overlay_x = screen.get_width() - vf.PREVIEW_W - 8
+        overlay_y = screen.get_height() - vf.PREVIEW_H - 8
+        screen.blit(surf, (overlay_x, overlay_y))
+        # Draw orange border around overlay
+        pygame.draw.rect(screen, (255, 165, 0),
+                        (overlay_x - 2, overlay_y - 2, vf.PREVIEW_W + 4, vf.PREVIEW_H + 4), 2)
+
     pygame.display.flip()
 
 
 def main():
     try:
         pygame.init()
-        screen = pygame.display.set_mode((480, 210))
+        screen = pygame.display.set_mode((640, 400))
         pygame.display.set_caption('RasBot — WASD + line follow')
     except Exception as e:
         sys.exit('pygame could not open a window. Run INSIDE the Pi desktop (VNC).\n  ' + str(e))
@@ -153,6 +179,11 @@ def main():
         follow_thread = None
         follow_mode   = False
 
+        # ── vision-follow state (mirrors IR follow state) ─────────────────
+        vision_stop   = threading.Event()
+        vision_thread = None
+        vision_mode   = False
+
         try:
             while running:
                 for event in pygame.event.get():
@@ -166,6 +197,10 @@ def main():
 
                         # ── F: toggle line following ───────────────────────
                         elif key == pygame.K_f:
+                            if vision_mode:  # stop vision follow first
+                                vision_stop.set()
+                                if vision_thread: vision_thread.join(timeout=2.0)
+                                vision_mode = False
                             follow_mode = not follow_mode
                             if follow_mode:
                                 bot.stop(); last_cmd = ('stop',)
@@ -200,6 +235,35 @@ def main():
                                     GameEngine.instance().on_run_end()
                                 except Exception:
                                     pass
+
+                        # ── G: toggle vision following ──────────────────────
+                        elif key == pygame.K_g:
+                            if follow_mode:  # stop IR follow first
+                                follow_stop.set()
+                                if follow_thread: follow_thread.join(timeout=2.0)
+                                follow_mode = False
+                            vision_mode = not vision_mode
+                            if vision_mode:
+                                bot.stop(); last_cmd = ('stop',)
+                                vision_stop.clear()
+                                vision_thread = threading.Thread(
+                                    target=vf.run,
+                                    args=(bot,),
+                                    kwargs={'stop_event': vision_stop},
+                                    daemon=True,
+                                )
+                                vision_thread.start()
+                                action = 'VISION FOLLOWING'
+                                bot.set_all_leds_color(Color.BLUE)
+                                print('--- vision following started (G to stop) ---')
+                            else:
+                                vision_stop.set()
+                                if vision_thread:
+                                    vision_thread.join(timeout=3.0)
+                                bot.stop(); last_cmd = ('stop',)
+                                bot.set_all_leds_color(Color.GREEN)
+                                action = 'stopped (manual)'
+                                print('--- vision following stopped ---')
 
                         # ── speed (only in manual mode) ────────────────────
                         elif not follow_mode:
@@ -301,7 +365,7 @@ def main():
                                 pygame.event.clear()
 
                 # ── held-key motion (manual mode only) ────────────────────
-                if not follow_mode:
+                if not follow_mode and not vision_mode:
                     pressed = pygame.key.get_pressed()
                     cmd = desired_command(pressed, speed)
                     if cmd != last_cmd:
@@ -309,13 +373,17 @@ def main():
                         last_cmd = cmd
                         action   = command_label(cmd)
 
-                draw_hud(screen, font, action, speed, pan, tilt, follow_mode)
+                draw_hud(screen, font, action, speed, pan, tilt, follow_mode,
+                         vision_mode, vf._latest_frame() if vision_mode else None)
                 clock.tick(FPS)
 
         finally:
             follow_stop.set()
             if follow_thread and follow_thread.is_alive():
                 follow_thread.join(timeout=2.0)
+            vision_stop.set()
+            if vision_thread and vision_thread.is_alive():
+                vision_thread.join(timeout=2.0)
             bot.stop()
             bot.set_all_leds_color(Color.RED)
             time.sleep(0.3)
