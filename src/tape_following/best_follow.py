@@ -108,5 +108,58 @@ def main():
             print("Motors off.")
 
 
+def run(bot, stop_event=None, **kwargs):
+    """Entry point called by drive.py F-key (mirrors line_follow.run API)."""
+    actual_L = 0.0
+    actual_R = 0.0
+    last_error = 0.0
+    lost_ticks = 0
+
+    try:
+        while stop_event is None or not stop_event.is_set():
+            L1, L2, R1, R2 = bot.read_line_sensors()
+
+            if L2 and R1:
+                error = 0.0;      lost_ticks = 0
+            elif L2 and not R1 and not R2:
+                error = -1.0;     lost_ticks = 0
+            elif L1 and L2:
+                error = -1.5;     lost_ticks = 0
+            elif L1 and not L2:
+                error = -2.0;     lost_ticks = 0
+            elif R1 and not L1 and not L2:
+                error = 1.0;      lost_ticks = 0
+            elif R1 and R2:
+                error = 1.5;      lost_ticks = 0
+            elif R2 and not R1:
+                error = 2.0;      lost_ticks = 0
+            else:
+                lost_ticks += 1
+                if lost_ticks < DEBOUNCE:
+                    error = last_error
+                else:
+                    error = -3.0 if last_error < 0 else (3.0 if last_error > 0 else 0.0)
+
+            if 0 < abs(error) < 3:
+                last_error = error
+
+            correction = Kp * error
+            target_L   = BASE_SPEED + correction
+            target_R   = BASE_SPEED - correction
+
+            if abs(error) >= 3:
+                target_L = -LOST_SPEED if error < 0 else LOST_SPEED
+                target_R =  LOST_SPEED if error < 0 else -LOST_SPEED
+
+            actual_L += (target_L - actual_L) * SMOOTH
+            actual_R += (target_R - actual_R) * SMOOTH
+
+            bot._apply_motors(clamp(actual_L), clamp(actual_L),
+                              clamp(actual_R), clamp(actual_R))
+            time.sleep(LOOP_DELAY)
+    finally:
+        bot.stop()
+
+
 if __name__ == "__main__":
     main()

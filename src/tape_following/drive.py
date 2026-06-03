@@ -48,7 +48,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from setup_and_api.api import RasBot, Color
 from camera.rs_capture import StereoCapture
 from pointcloud import scan360
-from tape_following import line_follow as lf
+from tape_following import best_follow as lf
 
 import pygame
 
