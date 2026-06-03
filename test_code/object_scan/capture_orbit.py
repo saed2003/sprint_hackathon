@@ -57,11 +57,12 @@ STRAFE_SPEED  = 40          # sideways strafe speed (orbit advance)
 SEC_PER_DEG   = 3.0 / 540   # in-place rotation timing (calibrated: 540 deg in 3.0s @ speed 40)
 SEC_PER_M     = 3.0 / 1.2   # forward timing (calibrated: 1.2 m in 3.0s @ speed 40)
 STRAFE_EFF    = 0.7         # mecanum strafe covers ~70% of forward distance per second
-STRAFE_GAIN   = 1.3         # drive THIS much further per step than the geometric chord, so each
-                            # stop advances a bit MORE around the object. The strafe slips, so the
-                            # camera-measured advance lags the nominal step (often ~half) — this
-                            # nudges it back up -> bigger steps, fewer shots. Raise for bigger
-                            # steps; lower toward 1.0 for smaller steps + more overlap (safer ICP).
+STRAFE_GAIN   = 1.7         # drive THIS much further per step than the geometric chord, so each
+                            # stop advances MORE around the object. On a slippery floor the strafe
+                            # covers less ground per second, so we over-drive to still take a real
+                            # step. Raise it if the robot barely moves; LOWER toward 1.0 if the
+                            # effective step exceeds ~18 deg (then consecutive shots stop
+                            # overlapping and the merge goes sparse).
 SETTLE        = 0.4         # pause for the chassis to settle before a shot
 ORBIT_DIR     = 1           # +1 = strafe/orbit one way, -1 the other (merge --dir must match)
 
@@ -318,7 +319,7 @@ def run_orbit(bot, cam, shots=ORBIT_SHOTS, radius=ORBIT_RADIUS, out_root=None, l
             bot.beep(0.05)
         except Exception:
             pass
-        if cumulative >= 360.0 - 0.5 * step or i >= max_shots - 1:
+        if cumulative >= 360.0 or i >= max_shots - 1:   # go to a FULL 360 (or just past), not short
             break
         b0 = _bearing_deg(cam) or 0.0                   # ~0 (just centred)
         orbit_strafe(bot, chord, log=log)              # advance one tangential step
@@ -328,8 +329,10 @@ def run_orbit(bot, cam, shots=ORBIT_SHOTS, radius=ORBIT_RADIUS, out_root=None, l
             adv = step                                  # lost after strafe -> assume nominal
         else:
             adv = abs(b1 - b0)
-            if adv < 0.3 * step or adv > 3.0 * step:    # implausible measurement -> nominal
-                adv = step
+            if adv > 3.0 * step:                        # reject ONLY impossibly-large readings.
+                adv = step                              # a small reading is a REAL slip — count it
+                                                        # honestly so we keep stepping until a true
+                                                        # 360 (don't inflate slips -> no early stop).
         cumulative += adv
         log(f"    advanced ~{adv:.1f}° (total {cumulative:.0f}/360°)")
         i += 1
