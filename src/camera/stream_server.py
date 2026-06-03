@@ -145,6 +145,9 @@ class MJPEGHandler(BaseHTTPRequestHandler):
         if self.path == '/stream.mjpg':
             self.send_response(200)
             self.send_header('Content-type', 'multipart/x-mixed-replace; boundary=--boundary')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+            self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
             self.end_headers()
 
             try:
@@ -175,6 +178,7 @@ class MJPEGHandler(BaseHTTPRequestHandler):
         elif self.path == '/':
             self.send_response(200)
             self.send_header('Content-type', 'text/html')
+            self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             html = b"""
             <html>
@@ -196,6 +200,14 @@ class MJPEGHandler(BaseHTTPRequestHandler):
         else:
             self.send_response(404)
             self.end_headers()
+
+    def do_OPTIONS(self):
+        """Handle CORS preflight requests."""
+        self.send_response(200)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
 
     def log_message(self, format, *args):
         """Suppress noisy HTTP logs."""
