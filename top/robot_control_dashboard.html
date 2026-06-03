@@ -492,7 +492,7 @@
 
         <div class="config-group">
             <label>Control Server IP:Port</label>
-            <input type="text" id="controlServerInput" value="localhost:9001" placeholder="e.g., 192.168.1.100:9001">
+            <input type="text" id="controlServerInput" value="localhost:9000" placeholder="e.g., 192.168.1.100:9000">
         </div>
 
         <div class="config-group">
@@ -644,7 +644,7 @@
         }
 
         const config = {
-            controlServer: resolveServer('controlServer', 9001),
+            controlServer: resolveServer('controlServer', 9000),
             streamServer: resolveServer('streamServer', 8000),
             streamConnected: false,
             controlConnected: false
