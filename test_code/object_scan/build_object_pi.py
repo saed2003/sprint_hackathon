@@ -320,7 +320,7 @@ def main():
     zmax = _pop(args, "--zmax", float)
     voxel = _pop(args, "--voxel", float)
     crop = _pop(args, "--crop", float)
-    window = _pop(args, "--win", int) or 2
+    window = _pop(args, "--win", int) or 3
 
     cfg = config.select(obj) if obj else config.DEFAULT
     zmin = cfg["zmin"] if zmin is None else zmin
