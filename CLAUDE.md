@@ -55,7 +55,15 @@ sprint/                         ← working-dir root: OLD flat prototype + the v
         │   ├── depth_map.py        cv2.StereoSGBM disparity → metric depth
         │   ├── ALGORITHM.md        how SGBM stereo works
         │   ├── capture_depth.py    grab an IR pair to feed it
+        │   ├── pointcloud.py       4-step laptop 360 ❶ one our-depth map → cloud.ply
+        │   ├── combine_360.py      ❷ stack 10 shots, nominal-36°/ICP align  (ICP FAILS on real arc data)
+        │   ├── pointcloud_360.py   ❸ dedup overlap + save merged 360 .ply + preview
         │   └── test_images/  result_ref/  depth_map_result.png
+        ├── new_point_cloud/      ★★ the 360 THAT WORKS — feature-based, supersedes depth_map/combine_360
+        │   ├── register_360.py     CLAHE+ORB/SIFT 3D↔3D registration + pose-graph loop closure
+        │   ├── geometry.py         pure-numpy math: back-project, Kabsch/RANSAC, .ply IO
+        │   ├── view_ply.py         interactive Open3D viewer (drag/zoom, +/- point size)
+        │   └── README.md  explain.html   why nominal/ICP failed & how CLAHE rescues it
         ├── wasd/                 Mode 1 — manual control
         │   └── drive.py            pygame WASD teleop + R/T/Y/V scan keys (the conductor)
         ├── tape_following/       ★ Mode 2 — autonomous line following (the REAL one)
@@ -73,6 +81,7 @@ sprint/                         ← working-dir root: OLD flat prototype + the v
 ```
 
 ★ = the files you'll touch most / that carry the project's core logic.
+★★ = `new_point_cloud/` is the **current working 360** — start here for cloud work.
 
 ## Two environments
 
@@ -80,7 +89,7 @@ Code runs in two places with different available libraries:
 
 | Environment | Libraries | What runs there |
 |---|---|---|
-| **Laptop** | `pyrealsense2`, `numpy`, `cv2`, `open3d`, `matplotlib` | `camera/`, `depth_map/`, `pointcloud/make_pointcloud.py`, `merge_clouds.py`, `render_cloud.py` |
+| **Laptop** | `pyrealsense2`, `numpy`, `cv2`, `open3d`, `matplotlib` | `camera/`, `depth_map/`, `new_point_cloud/` (needs Open3D), `pointcloud/make_pointcloud.py`, `merge_clouds.py`, `render_cloud.py` |
 | **Raspberry Pi (robot)** | `pyrealsense2`, `numpy`, `cv2`, `pygame`, `smbus`, `PIL` — **no Open3D** | everything that imports `RasBot`: `control_server.py`, `wasd/`, `tape_following/`, `camera_move/`, `radar/`, `game/`, `oled_message.py`, `pointcloud/scan360.py`, `view3d.py` |
 
 **Critical:** importing the RasBot API pulls `smbus`, which only exists on the Pi —
@@ -195,6 +204,14 @@ rasbot.service`) before using a teleop.
 # Our own stereo depth from an IR pair (laptop):
 python3 depth_map/depth_map.py                # demos on depth_map/test_images/
 
+# Build the WORKING 360 from a scan (laptop, Open3D) — feature-based, no angle guess:
+python3 new_point_cloud/register_360.py                       # newest captures/scan_*
+python3 new_point_cloud/register_360.py captures/scan_<ts>
+python3 new_point_cloud/register_360.py captures/scan_<ts> --sift    # SIFT every pair (robust)
+python3 new_point_cloud/register_360.py captures/scan_<ts> --byshot  # tint shots to see seams
+python3 new_point_cloud/register_360.py captures/scan_<ts> --gray --zmax 1.5
+#   → writes new_point_cloud/pointcloud_360.ply (+ _preview.png); watch the `components:` line
+
 # On the Pi — rebuild a 360 scan without re-driving:
 python3 pointcloud/scan360.py captures/scan_<ts>            # measured angle (default)
 python3 pointcloud/scan360.py captures/scan_<ts> --known    # trust the timed step
@@ -202,7 +219,8 @@ python3 pointcloud/scan360.py captures/scan_<ts> --angle 36 # force fixed angle
 python3 pointcloud/scan360.py --calibrate --turned <deg>    # calibrate rotation timing
 
 # View a cloud:
-python3 pointcloud/view3d.py captures/scan_<ts>/merged_360.ply   # Pi (numpy+cv2)
+python3 new_point_cloud/view_ply.py [cloud.ply]                 # laptop, interactive Open3D
+python3 pointcloud/view3d.py captures/scan_<ts>/merged_360.ply  # Pi (numpy+cv2)
 
 # Copy scans Pi → laptop:
 scp -r sprint@sprint.local:~/sprint_hackathon/captures ~/sprint_hackathon/
@@ -221,17 +239,54 @@ captures/<ts>/ { depth.npy, ir_left/right.png, depth_color.png, intrinsics.txt }
   ├── pointcloud/make_pointcloud.py  (laptop, Open3D)  → cloud.ply
   │     back-project:  Z=depth,  X=(u-ppx)Z/fx,  Y=(v-ppy)Z/fy
   │
-  └── pointcloud/scan360.py  (Pi, numpy+cv2)  → merged_360.ply
-        ├── back_project(): depth.npy → 3D points (+ IR as gray color)
-        ├── cumulative_angles(): recorded angle.txt, else ORB→homography yaw, else nominal
-        ├── ry(angle): rotate each view about Y (vertical) into view-0's frame
-        ├── voxel_downsample(VOXEL=1cm) + remove_isolated() (drop passive-stereo flyers)
-        └── write_ply() + view3d.save_view() preview
+  ├── pointcloud/scan360.py  (Pi, numpy+cv2)  → merged_360.ply
+  │     ├── back_project(): depth.npy → 3D points (+ IR as gray color)
+  │     ├── cumulative_angles(): recorded angle.txt, else ORB→homography yaw, else nominal
+  │     ├── ry(angle): rotate each view about Y (vertical) into view-0's frame
+  │     ├── voxel_downsample(VOXEL=1cm) + remove_isolated() (drop passive-stereo flyers)
+  │     └── write_ply() + view3d.save_view() preview
+  │
+  └── new_point_cloud/register_360.py  (laptop, Open3D)  → pointcloud_360.ply   ★ the 360 that works
+        ├── per shot:  CLAHE→ORB/SIFT features, lift each to 3D via depth.npy
+        ├── per pair:  match → 2D fundamental filter → Kabsch+RANSAC → rigid T  (NO angle guess)
+        ├── pose graph: consecutive=odometry, others=loop closures → Open3D global opt spreads drift
+        └── re-project all shots into one frame, voxel 5 mm, cull flyers → .ply + preview
 ```
 
 > ⚠️ Passive stereo (no projector): aim at **textured, well-lit** scenes — blank
 > walls give empty depth. Keep depth in **0.1–1.5 m** (`ZMIN/ZMAX`); past ~1.5 m is
 > noise. For a good merge, consecutive shots need heavy overlap.
+
+## The three 360 pipelines (which one to use)
+
+Three different mergers exist because the first two fought the same enemy — the
+robot has **no IMU/encoder** and the camera sits **off the spin axis**, so each step
+is rotation **+ a little translation (an arc)**, and the real step is ~40° (the spin
+over-rotates to ~400°), not the nominal 36°. They differ only in how they recover
+each shot's pose:
+
+| Pipeline | Pose source | Depth source | Runs on | Verdict |
+|---|---|---|---|---|
+| `pointcloud/scan360.py` | **timed** `angle.txt`, else image-yaw | hardware `depth.npy` | **Pi** (numpy+cv2) | on-robot quick merge; smears with arc drift |
+| `depth_map/{pointcloud,combine_360,pointcloud_360}.py` | nominal 36° **or ICP** | **our SGBM** depth | laptop | ❌ nominal smears, **ICP locks onto passive-stereo noise → garbage** |
+| **`new_point_cloud/register_360.py`** | **measured** (feature 3D↔3D + pose graph) | hardware `depth.npy` | laptop (Open3D) | ✅ **the one that works — use this** |
+
+**Why `register_360` wins:** it *measures* each pose from image correspondences
+instead of guessing an angle. Per shot it CLAHE-enhances the IR, finds ORB (SIFT
+fallback) features, and lifts each to 3D through the depth map; for **every** pair it
+matches, pre-filters with a 2D fundamental matrix, and solves a rigid transform with
+**Kabsch inside RANSAC** — no initial angle. The accepted pairs form a pose graph
+(consecutive = trusted odometry, the rest = loop closures) that Open3D globally
+optimizes to spread drift around the ring.
+
+**CLAHE is the whole game** (see `new_point_cloud/README.md`): the
+D405 IR is dim (~mean 55/255), so raw ORB finds ~30 keypoints on dark shots and the
+ring breaks — looks like a blank wall but isn't. CLAHE before detection yields ~30×
+more keypoints and **every shot registers** (4/10 → 10/10). It is detection-only;
+the original gray still colors the cloud. The run's `components:` line is the health
+check — **one component of all 10 shots = a full 360**; a split means the *capture*
+(not the code) is bad. `depth_map/combine_360.py` is kept only as the cautionary
+prototype it documents in its own docstring.
 
 ## scan360 open-loop rotation (important)
 
@@ -282,9 +337,15 @@ Pi is headless; reach it over Wi-Fi by SSH (creds in `docs/sprint info.txt`):
 
 ## Status / still to build
 
+- **360 reconstruction** — `new_point_cloud/register_360.py` is the **working**
+  merger (feature 3D↔3D + pose graph + CLAHE); both example scans reach a 10/10
+  single component. It reads the **hardware** `depth.npy`. The `depth_map/` 4-step
+  pipeline (nominal-36°/ICP on **our** SGBM depth) is the superseded prototype — its
+  ICP path fails on real arc-motion captures. See "The three 360 pipelines" above.
 - **Custom stereo depth** (`depth_map/depth_map.py`) exists and works on test images
   (SGBM + optional WLS hole-fill). Not yet wired to overwrite `depth.npy` in live
   capture folders — doing so makes the whole pipeline use our depth automatically.
+  (Note: the working 360 currently uses the **hardware** depth, not ours.)
 - **Line following** (`tape_following/line_follow.py`) is a full state-machine PID
   follower; tune thresholds/speeds on the real tape (`--calibrate`).
 - The web dashboard supports manual mode + captures; **autonomous mode** in
