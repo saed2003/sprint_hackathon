@@ -81,7 +81,9 @@ FACE_PULSE    = 0.10        # seconds per corrective turn pulse (lower if it ove
 FACE_TOL_PX   = 50          # object counts as 'centred' within this many px of centre
 FACE_ITERS    = 8           # max correction pulses per stop
 TURN_SIGN     = +1          # flip to -1 if the base turns AWAY from the object
-RADIUS_TOL    = 0.05        # only correct distance if off target by more than this (m)
+RADIUS_TOL    = 0.03        # only correct distance if off target by more than this (m).
+                            # Tighter = steadier object scale across shots = better feature
+                            # matching in the build (scale jumps split the registration ring).
 RADIUS_MAX_STEP = 0.10      # cap a single in/out correction drive (m), for safety
 
 
