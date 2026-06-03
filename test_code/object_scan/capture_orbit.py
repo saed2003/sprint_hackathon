@@ -50,19 +50,26 @@ except Exception:
     _CFG = dict(radius=0.40, shots=24, zmin=0.30, zmax=0.52)
 
 ORBIT_SHOTS   = _CFG["shots"]    # views around the object (24 -> 15 deg each)
-ORBIT_RADIUS  = _CFG["radius"]   # metres from the camera to the object centre (~0.40)
-ROTATE_SPEED  = 40          # in-place turn speed
-FORWARD_SPEED = 40          # forward drive speed
+ORBIT_RADIUS  = _CFG["radius"]   # metres from the camera to the object centre (~0.35)
+ROTATE_SPEED  = 40          # in-place turn speed (calibration helper)
+FORWARD_SPEED = 40          # forward/back drive speed (radius hold)
+STRAFE_SPEED  = 40          # sideways strafe speed (orbit advance)
 SEC_PER_DEG   = 3.0 / 540   # in-place rotation timing (calibrated: 540 deg in 3.0s @ speed 40)
 SEC_PER_M     = 3.0 / 1.2   # forward timing (calibrated: 1.2 m in 3.0s @ speed 40)
+STRAFE_EFF    = 0.7         # mecanum strafe covers ~70% of forward distance per second
 SETTLE        = 0.4         # pause for the chassis to settle before a shot
-ORBIT_DIR     = 1           # +1 = orbit one way, -1 the other (merge --dir must match)
+ORBIT_DIR     = 1           # +1 = strafe/orbit one way, -1 the other (merge --dir must match)
 
-# vision auto-centring (pan servo) + radius hold
+# vision: steer the BASE to FACE the object (closed loop) + hold the radius.
+# The object is always the closest thing in the depth gate, so its horizontal
+# centroid tells us how far to turn. We turn until it is centred — open-loop turn
+# accuracy doesn't matter. TUNE FACE_SPEED/FACE_PULSE on the real robot.
 ZMIN, ZMAX    = _CFG["zmin"], _CFG["zmax"]   # object depth gate (the close thing in frame)
-PAN_GAIN      = 0.04        # deg of pan per pixel of centring error
-PAN_SIGN      = +1          # flip to -1 if the camera turns AWAY from the object
-CENTER_ITERS  = 3           # aim refinement passes per stop
+FACE_SPEED    = 35          # base turn speed while facing the object (raise if it won't move)
+FACE_PULSE    = 0.10        # seconds per corrective turn pulse (lower if it overshoots)
+FACE_TOL_PX   = 50          # object counts as 'centred' within this many px of centre
+FACE_ITERS    = 8           # max correction pulses per stop
+TURN_SIGN     = +1          # flip to -1 if the base turns AWAY from the object
 RADIUS_TOL    = 0.05        # only correct distance if off target by more than this (m)
 RADIUS_MAX_STEP = 0.10      # cap a single in/out correction drive (m), for safety
 
@@ -82,27 +89,33 @@ def object_centroid_and_distance(depth_m, ppx):
     return u, d, n
 
 
-def auto_center(bot, cam, pan_angle, log=print):
-    """Nudge the PAN servo so the object sits in the horizontal centre. Returns
-    (new_pan_angle, distance_m). Vision closes the aim loop the open-loop base can't."""
-    ppx = cam.intr.ppx
+def face_object(bot, cam, log=print):
+    """Turn the ROBOT BASE (closed loop, vision) until the object is horizontally
+    centred — this is the camera 'following' the DB5. Bang-bang on the object's depth
+    centroid: pulse a small in-place turn toward it, re-measure, repeat. It does NOT
+    rely on open-loop turn accuracy, so it works even when small timed turns are
+    unreliable. Returns the object distance (m), or None if the object was lost."""
     dist = None
-    for _ in range(CENTER_ITERS):
+    for _ in range(FACE_ITERS):
         depth = cam.grab_depth()
         if depth is None:
             break
-        u, d, n = object_centroid_and_distance(depth, ppx)
+        u, d, n = object_centroid_and_distance(depth, cam.intr.ppx)
         if u is None:
-            log("    (no object in close range — check distance/lighting)")
+            log("    (object lost — check distance/lighting/ZMIN-ZMAX)")
             break
         dist = d
-        err = u - ppx                                   # +err: object is to the right
-        if abs(err) < 8:
+        err = u - cam.intr.ppx                          # +err: object is to the right
+        if abs(err) < FACE_TOL_PX:
             break
-        pan_angle = int(max(0, min(180, pan_angle + PAN_SIGN * PAN_GAIN * err)))
-        bot.set_pan(pan_angle)
-        time.sleep(0.25)
-    return pan_angle, dist
+        turn_right = (err > 0)                          # object right -> turn base right
+        if TURN_SIGN < 0:
+            turn_right = not turn_right
+        (bot.rotate_right if turn_right else bot.rotate_left)(FACE_SPEED)
+        time.sleep(FACE_PULSE)
+        bot.stop()
+        time.sleep(0.15)                                # settle before re-measuring
+    return dist
 
 
 def hold_radius(bot, cam, radius, log=print):
@@ -130,14 +143,6 @@ def hold_radius(bot, cam, radius, log=print):
     return d
 
 
-def _rotate(bot, deg, speed=ROTATE_SPEED, sec_per_deg=SEC_PER_DEG, direction=ORBIT_DIR):
-    """Time-pulse an in-place turn of `deg` degrees (sign via direction)."""
-    spin = bot.rotate_left if direction >= 0 else bot.rotate_right
-    spin(speed)
-    time.sleep(sec_per_deg * abs(deg))
-    bot.stop()
-
-
 def _forward(bot, metres, speed=FORWARD_SPEED, sec_per_m=SEC_PER_M):
     """Time-pulse a forward drive of `metres`."""
     bot.forward(speed)
@@ -152,13 +157,16 @@ def _backward(bot, metres, speed=FORWARD_SPEED, sec_per_m=SEC_PER_M):
     bot.stop()
 
 
-def orbit_step(bot, step_deg, radius, log=print):
-    """Advance one step around the object: turn Δ/2, drive the chord, turn Δ/2."""
-    chord = 2.0 * radius * math.sin(math.radians(step_deg) / 2.0)
-    _rotate(bot, step_deg / 2.0); time.sleep(0.1)
-    _forward(bot, chord);         time.sleep(0.1)
-    _rotate(bot, step_deg / 2.0)
-    log(f"    orbit step: turn {step_deg/2:.0f}, fwd {chord*100:.1f}cm, turn {step_deg/2:.0f}")
+def orbit_strafe(bot, chord, log=print):
+    """Advance one step AROUND the object by strafing sideways (mecanum) by `chord`
+    metres — that's tangent to the orbit, so the camera keeps looking at the object
+    instead of driving into it. The next face_object() re-centres the small residual
+    bearing change. Strafe covers ~STRAFE_EFF of the forward distance per second."""
+    t = (SEC_PER_M / max(0.1, STRAFE_EFF)) * chord
+    (bot.right if ORBIT_DIR >= 0 else bot.left)(STRAFE_SPEED)
+    time.sleep(t)
+    bot.stop()
+    log(f"    orbit strafe: {'right' if ORBIT_DIR >= 0 else 'left'} {chord*100:.1f}cm ({t:.2f}s)")
 
 
 def run_orbit(bot, cam, shots=ORBIT_SHOTS, radius=ORBIT_RADIUS, out_root=None, log=print):
@@ -167,19 +175,20 @@ def run_orbit(bot, cam, shots=ORBIT_SHOTS, radius=ORBIT_RADIUS, out_root=None, l
     session = os.path.join(out_root, "orbit_" + time.strftime("%Y%m%d_%H%M%S"))
     os.makedirs(session, exist_ok=True)
     step = 360.0 / shots
+    chord = 2.0 * radius * math.sin(math.radians(step) / 2.0)
     if cam.pipeline is None:
         log("Opening D405 (warming up)..."); cam.start(); log(cam.info())
 
-    log(f"robot orbit: {shots} shots, {step:.0f} deg each, R={radius*100:.0f}cm")
-    pan = 90
-    bot.set_pan(pan)
+    log(f"robot orbit: {shots} shots, {step:.0f} deg each, R={radius*100:.0f}cm, "
+        f"chord={chord*100:.1f}cm  (base-steered + strafe advance)")
+    bot.set_pan(90)                                     # camera fixed forward; the BASE aims
     cumulative = 0.0
     for i in range(shots):
         bot.stop(); time.sleep(SETTLE)
-        pan, dist = auto_center(bot, cam, pan, log=log)     # vision: aim the camera
-        held = hold_radius(bot, cam, radius, log=log)       # vision: keep ~constant radius
+        dist = face_object(bot, cam, log=log)           # vision: turn the base to face the DB5
+        held = hold_radius(bot, cam, radius, log=log)   # vision: keep ~constant radius
         dist = held or dist
-        pan, _ = auto_center(bot, cam, pan, log=log)        # re-aim after any in/out nudge
+        face_object(bot, cam, log=log)                  # re-face after any in/out nudge
         folder = os.path.join(session, f"shot_{i:02d}")
         ok = cam.save_to(folder)
         with open(os.path.join(folder, "angle.txt"), "w") as f:
@@ -191,7 +200,7 @@ def run_orbit(bot, cam, shots=ORBIT_SHOTS, radius=ORBIT_RADIUS, out_root=None, l
         except Exception:
             pass
         if i < shots - 1:
-            orbit_step(bot, step, radius, log=log)
+            orbit_strafe(bot, chord, log=log)
             cumulative += step
     bot.stop()
     log(f"  orbit complete -> {session}")

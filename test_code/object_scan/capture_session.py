@@ -97,8 +97,9 @@ class ColorStereoCapture:
         for _ in range(settle):
             self.pipeline.wait_for_frames()
         frames = self.pipeline.wait_for_frames()
-        if self.has_color:
-            frames = self.align.process(frames)        # colour -> depth grid
+        # Take depth + IR from the RAW frameset. Aligning to depth reprojects the IR
+        # into the depth grid, so depth holes turn the IR black (~13%); the raw IR is
+        # clean and matches the robot's V-capture. Align a COPY only for the colour.
         depth = frames.get_depth_frame()
         irl = frames.get_infrared_frame(1)
         irr = frames.get_infrared_frame(2)
@@ -111,7 +112,7 @@ class ColorStereoCapture:
         cv2.imwrite(os.path.join(folder, "ir_left.png"), np.asanyarray(irl.get_data()))
         cv2.imwrite(os.path.join(folder, "ir_right.png"), np.asanyarray(irr.get_data()))
         if self.has_color:
-            cframe = frames.get_color_frame()
+            cframe = self.align.process(frames).get_color_frame()   # colour -> depth grid
             if cframe:
                 cv2.imwrite(os.path.join(folder, "color.png"), np.asanyarray(cframe.get_data()))
         with open(os.path.join(folder, "intrinsics.txt"), "w") as f:
