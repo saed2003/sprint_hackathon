@@ -255,21 +255,41 @@ def reacquire_object(bot, cam, log=print):
     return False
 
 
+def _bearing_deg(cam):
+    """Object's horizontal bearing off the optical axis, in degrees (signed; + = object to
+    the right). None if not seen. Used to MEASURE the orbit advance per step: after a
+    tangential strafe the object swings off-centre by ~the orbit angle covered
+    (atan(chord/R) ≈ θ), so the camera closes the ANGLE loop too — strafe slip can no
+    longer cut the circle short."""
+    depth = cam.grab_depth()
+    if depth is None:
+        return None
+    u, d, n = object_centroid_and_distance(depth, cam.intr)
+    if u is None:
+        return None
+    return math.degrees(math.atan2(u - cam.intr.ppx, cam.intr.fx))
+
+
 def run_orbit(bot, cam, shots=ORBIT_SHOTS, radius=ORBIT_RADIUS, out_root=None, log=print):
-    """Stop-and-shoot orbit. Returns the session folder of shot_NN captures."""
+    """Stop-and-shoot orbit. Drives until a FULL 360° **measured by the camera** (object
+    bearing swing per step), NOT a fixed shot count — so mecanum strafe slip can't stop it
+    half-way. `shots` only sets the strafe chord (nominal step size). Returns the session."""
     out_root = out_root or default_out_root()
     session = os.path.join(out_root, "orbit_" + time.strftime("%Y%m%d_%H%M%S"))
     os.makedirs(session, exist_ok=True)
-    step = 360.0 / shots
+    step = 360.0 / shots                                # nominal step -> sets the strafe chord
     chord = 2.0 * radius * math.sin(math.radians(step) / 2.0)
+    max_shots = shots * 3                               # safety cap if per-step advance is tiny
     if cam.pipeline is None:
         log("Opening D405 (warming up)..."); cam.start(); log(cam.info())
 
-    log(f"robot orbit: {shots} shots, {step:.0f} deg each, R={radius*100:.0f}cm, "
-        f"chord={chord*100:.1f}cm  (base-steered + strafe advance)")
+    log(f"robot orbit: target 360°, ~{step:.0f}°/step (chord={chord*100:.1f}cm), "
+        f"R={radius*100:.0f}cm, cap {max_shots} shots  (vision-measured advance)")
     bot.set_pan(90)                                     # camera fixed forward; the BASE aims
+    face_object(bot, cam, log=log)                      # initial aim (not counted as advance)
     cumulative = 0.0
-    for i in range(shots):
+    i = 0
+    while True:
         bot.stop(); time.sleep(SETTLE)
         dist = face_object(bot, cam, log=log)           # vision: turn the base to face the DB5
         if dist is None and reacquire_object(bot, cam, log=log):
@@ -282,18 +302,30 @@ def run_orbit(bot, cam, shots=ORBIT_SHOTS, radius=ORBIT_RADIUS, out_root=None, l
         folder = os.path.join(session, f"shot_{i:02d}")
         ok = cam.save_to(folder)
         with open(os.path.join(folder, "angle.txt"), "w") as f:
-            f.write(f"{cumulative:.3f}\n")
-        log(f"  shot {i+1}/{shots} (~{cumulative:.0f} deg, d={dist*100 if dist else float('nan'):.0f}cm)"
+            f.write(f"{cumulative:.3f}\n")              # MEASURED cumulative angle (better prior)
+        log(f"  shot {i+1} (~{cumulative:.0f}/360°, d={dist*100 if dist else float('nan'):.0f}cm)"
             + ("" if ok else "  FRAME DROPPED"))
         try:
             bot.beep(0.05)
         except Exception:
             pass
-        if i < shots - 1:
-            orbit_strafe(bot, chord, log=log)
-            cumulative += step
+        if cumulative >= 360.0 - 0.5 * step or i >= max_shots - 1:
+            break
+        b0 = _bearing_deg(cam) or 0.0                   # ~0 (just centred)
+        orbit_strafe(bot, chord, log=log)              # advance one tangential step
+        time.sleep(0.15)
+        b1 = _bearing_deg(cam)                          # how far the object swung = orbit advance
+        if b1 is None:
+            adv = step                                  # lost after strafe -> assume nominal
+        else:
+            adv = abs(b1 - b0)
+            if adv < 0.3 * step or adv > 3.0 * step:    # implausible measurement -> nominal
+                adv = step
+        cumulative += adv
+        log(f"    advanced ~{adv:.1f}° (total {cumulative:.0f}/360°)")
+        i += 1
     bot.stop()
-    log(f"  orbit complete -> {session}")
+    log(f"  orbit complete: {i + 1} shots, {cumulative:.0f}° -> {session}")
     log(f"  build on the laptop:  python build_object.py {session} --mesh")
     return session
 
