@@ -45,6 +45,8 @@ BRAKE_K       = 0.45   # auto-brake strength: speed drops as correction grows
 SMOOTH        = 0.30   # motor EMA: 0.15=silky, 0.30=balanced, 0.5=snappy
 PIVOT_FWD     = 115    # outer-wheel speed during a hard corner pivot
 PIVOT_REV     = -55    # inner-wheel speed during a hard corner pivot (spins it round)
+PIVOT_LATCH   = 45     # max ticks to COMMIT to a sharp turn (~0.36s) — fixes missed turns
+JUNCTION_DIR  = +1     # which way to go at a true cross/T-junction: +1 = RIGHT, -1 = LEFT
 LOST_SPEED    = 95     # in-place spin speed when hunting a lost line
 DEBOUNCE      = 2      # consecutive all-off reads before declaring "lost"
 LOOP_DELAY    = 0.008  # ~125 Hz — fast loop keeps the derivative accurate
@@ -62,7 +64,10 @@ def clamp(v, lo=-255, hi=255):
 
 
 def _read_pattern(L1, L2, R1, R2):
-    """Map the 4 sensor bits to a signed error, or None if all-off.
+    """Map a 0-2 sensor pattern to a signed error, or None if all-off.
+
+    (3-4 sensor patterns are handled as junctions/corners in step(),
+    so this only sees the normal tracking cases.)
 
     Negative error = tape is LEFT  → steer left.
     Positive error = tape is RIGHT → steer right.
@@ -71,20 +76,34 @@ def _read_pattern(L1, L2, R1, R2):
         return 0.0
     if L1 and not L2 and not R1 and not R2:         # 1000 sharp LEFT corner
         return -E_OUTER
-    if L1 and L2 and not R1 and not R2:             # 1100 leaning left
+    if L1 and L2:                                   # 1100 leaning left
         return -E_BOTH
-    if L2 and not L1 and not R1 and not R2:         # 0100 slight left
+    if L2:                                          # 0100 slight left
         return -E_INNER
     if R2 and not R1 and not L1 and not L2:         # 0001 sharp RIGHT corner
         return E_OUTER
-    if R1 and R2 and not L1 and not L2:             # 0011 leaning right
+    if R1 and R2:                                   # 0011 leaning right
         return E_BOTH
-    if R1 and not R2 and not L1 and not L2:         # 0010 slight right
+    if R1:                                          # 0010 slight right
         return E_INNER
-    if not (L1 or L2 or R1 or R2):                  # 0000 lost
-        return None
-    # any odd pattern (junction 1111, gaps like 1001/1010) → treat as centred
-    return 0.0
+    return None                                     # 0000 lost
+
+
+def _junction_dir(L1, L2, R1, R2, count):
+    """For a 3-4 sensor reading, decide which way to commit.
+
+    count==4 (1111)  → true cross/T → use the configured JUNCTION_DIR
+    count==3 1110    → tape spans left  → turn LEFT  (-1)
+    count==3 0111    → tape spans right → turn RIGHT (+1)
+    anything odd     → fall back to JUNCTION_DIR
+    """
+    if count == 4:
+        return JUNCTION_DIR
+    if not R2 and L1:        # 1110 — left-biased corner
+        return -1
+    if not L1 and R2:        # 0111 — right-biased corner
+        return +1
+    return JUNCTION_DIR
 
 
 class _Follower:
@@ -95,10 +114,41 @@ class _Follower:
         self.actual_R = 0.0
         self.last_error = 0.0    # for derivative + lost-line memory
         self.lost_ticks = 0      # debounce counter for all-off
+        self.latch_ticks = 0     # >0 while COMMITTED to a sharp turn / junction
+        self.latch_dir = 0       # which way we're committed: +1 right, -1 left
+
+    def _pivot(self, bot, direction):
+        """Hard in-place pivot toward `direction` (+1 right / -1 left)."""
+        if direction < 0:
+            self._snap(bot, PIVOT_REV, PIVOT_FWD)    # pivot LEFT
+        else:
+            self._snap(bot, PIVOT_FWD, PIVOT_REV)    # pivot RIGHT
 
     def step(self, bot):
         L1, L2, R1, R2 = bot.read_line_sensors()
+        count = int(L1) + int(L2) + int(R1) + int(R2)
+
+        # ── JUNCTION / CROSS: 3-4 sensors on → commit to a branch fast ──
+        if count >= 3:
+            self.latch_dir = _junction_dir(L1, L2, R1, R2, count)
+            self.latch_ticks = PIVOT_LATCH
+            self.last_error = float(self.latch_dir) * E_OUTER
+            self._pivot(bot, self.latch_dir)
+            return
+
         raw = _read_pattern(L1, L2, R1, R2)
+
+        # ── COMMITTED TURN: keep pivoting until the line re-centres ─────
+        # This is what stops "almost made it" misses — the robot finishes
+        # the turn through the brief all-off zone instead of giving up.
+        if self.latch_ticks > 0:
+            reacquired = (raw is not None and abs(raw) <= E_INNER)
+            if reacquired:
+                self.latch_ticks = 0          # turn complete → resume tracking
+            else:
+                self.latch_ticks -= 1
+                self._pivot(bot, self.latch_dir)
+                return
 
         # ── lost-line handling with debounce ───────────────────────────
         if raw is None:
@@ -124,13 +174,13 @@ class _Follower:
         correction = Kp * error + Kd * derivative
         self.last_error = error                  # remember real readings only
 
-        # ── HARD PIVOT on a sharp corner (outer sensor only) ───────────
-        # Snap (no smoothing) so the turn engages instantly and never misses.
+        # ── SHARP CORNER (outer sensor only) → arm the commit latch ────
+        # Snap into the pivot AND latch it so the turn completes even if the
+        # sensors go blank mid-rotation.
         if abs(error) >= E_OUTER:
-            if error < 0:
-                self._snap(bot, PIVOT_REV, PIVOT_FWD)    # pivot LEFT
-            else:
-                self._snap(bot, PIVOT_FWD, PIVOT_REV)    # pivot RIGHT
+            self.latch_dir = 1 if error > 0 else -1
+            self.latch_ticks = PIVOT_LATCH
+            self._pivot(bot, self.latch_dir)
             return
 
         # ── normal tracking with predictive braking ───────────────────
