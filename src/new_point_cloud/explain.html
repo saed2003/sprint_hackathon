@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>360 Merge — How it works</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --panel2:#1c2230; --ink:#e6edf3; --dim:#9aa7b4;
+    --line:#30363d; --accent:#58a6ff; --green:#3fb950; --red:#ff6b6b; --blue:#4aa3ff;
+    --yellow:#f2cc60; --purple:#bc8cff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.55}
+  code,.mono{font-family:"SF Mono",Consolas,Menlo,monospace}
+  header{padding:48px 24px 28px;text-align:center;
+    background:radial-gradient(1200px 300px at 50% -50%,#1b2330,transparent)}
+  header h1{margin:0 0 8px;font-size:30px}
+  header p{margin:4px auto;max-width:720px;color:var(--dim)}
+  nav{position:sticky;top:0;z-index:20;display:flex;flex-wrap:wrap;gap:6px;justify-content:center;
+    padding:10px;background:rgba(14,17,22,.9);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+  nav a{color:var(--dim);text-decoration:none;font-size:13px;padding:5px 10px;border-radius:6px}
+  nav a:hover{background:var(--panel2);color:var(--ink)}
+  main{max-width:980px;margin:0 auto;padding:24px}
+  section{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:24px;margin:22px 0}
+  section h2{margin:0 0 4px;font-size:22px;display:flex;align-items:center;gap:10px}
+  .step{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;
+    border-radius:50%;background:var(--accent);color:#04121f;font-weight:700;font-size:15px;flex:none}
+  .sub{color:var(--dim);margin:2px 0 16px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:center}
+  @media(max-width:760px){.grid2{grid-template-columns:1fr}}
+  .card{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:14px}
+  .mono.block{display:block;white-space:pre;overflow-x:auto;background:#0b0f14;border:1px solid var(--line);
+    border-radius:8px;padding:12px;font-size:13px;color:#cdd9e5}
+  .kw{color:var(--purple)} .nm{color:var(--yellow)} .cm{color:#6e7d8c}
+  .pill{display:inline-block;padding:1px 8px;border-radius:20px;font-size:12px;border:1px solid var(--line)}
+  .red{color:var(--red)} .blue{color:var(--blue)} .green{color:var(--green)} .yellow{color:var(--yellow)}
+  button{background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:8px;
+    padding:8px 14px;cursor:pointer;font-size:14px}
+  button:hover{border-color:var(--accent)}
+  button.on{background:var(--accent);color:#04121f;border-color:var(--accent)}
+  .controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0}
+  .big{font-size:40px;font-weight:800;color:var(--accent)}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:13px;color:var(--dim);margin-top:8px}
+  .dot{display:inline-block;width:11px;height:11px;border-radius:50%;vertical-align:middle;margin-right:5px}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  td,th{border:1px solid var(--line);padding:7px 9px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;display:block}
+  .note{border-left:3px solid var(--accent);padding:6px 12px;color:var(--dim);background:#10161f;border-radius:0 8px 8px 0;margin:10px 0}
+  .matrixwrap{overflow-x:auto}
+  .answer{background:linear-gradient(90deg,#10203a,#161b22);border:1px solid var(--accent);
+    border-radius:10px;padding:14px 18px;margin:8px 0 18px}
+  .big2{font-size:19px;font-weight:700;color:var(--accent);margin-bottom:6px}
+  .flowwrap{overflow-x:auto;padding:6px 2px 12px}
+  .lane{margin:10px 0}
+  .lanetag{display:inline-block;font-size:11px;letter-spacing:.04em;text-transform:uppercase;
+    padding:2px 8px;border-radius:5px;margin-bottom:8px}
+  .lanetag.blue{background:#10243f;color:#7cc0ff;border:1px solid #1e4a78}
+  .lanetag.orange{background:#3a2a12;color:#f2b65c;border:1px solid #785a1e}
+  .lanetag.gray{background:#23272e;color:#8b97a3;border:1px solid #3a414b}
+  .frow{display:flex;align-items:center;gap:6px;flex-wrap:nowrap;min-width:max-content}
+  .fbox{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;
+    font-size:12px;font-family:Consolas,monospace;text-align:center;white-space:nowrap;line-height:1.35}
+  .fbox i{color:#7d8a97;font-size:10px;font-style:normal;display:block}
+  .fbox.img{border-color:#1e4a78}
+  .fbox.dep{border-color:#785a1e}
+  .fbox.un{border-color:#3a414b;color:#8b97a3}
+  .fbox.join{background:#10203a;border-color:var(--accent);white-space:normal;font-size:13px;padding:11px 14px}
+  .arr{color:var(--accent);font-weight:700;font-size:16px}
+  .joinrow{margin-top:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Building one 360° point cloud from 10 stereo shots</h1>
+  <p>The robot spins in place and takes 10 stereo photos. It has <b>no compass and no wheel
+  encoders</b>, so it doesn't know how far it turned. This page shows how the code figures
+  out each shot's angle <i>from the images</i> and merges all 10 into one cloud.</p>
+</header>
+
+<nav>
+  <a href="#ring">① 10 shots</a>
+  <a href="#pairs">② Why 45 pairs</a>
+  <a href="#backproject">③ Pixels→3D</a>
+  <a href="#features">④ Features</a>
+  <a href="#concepts">🔍 Concepts</a>
+  <a href="#kabsch">⑤ Align a pair</a>
+  <a href="#graph">⑥ Pose graph</a>
+  <a href="#merge">⑦ Merge</a>
+  <a href="#numbers">Numbers</a>
+</nav>
+
+<main>
+
+<!-- ====================== 1 RING ====================== -->
+<section id="ring">
+  <h2><span class="step">1</span> The 10 shots — a ring of views</h2>
+  <p class="sub">Robot sits in one spot, rotates ~36–40° between each shot. Camera field of
+  view is ~90°, so neighbours <b>overlap a lot</b> (they see the same wall from a slightly
+  different angle). The last shot wraps around to overlap the first.</p>
+  <div class="grid2">
+    <svg id="ringSvg" viewBox="0 0 360 320"></svg>
+    <div class="card">
+      <p>Each red dot = one camera position (shot 0…9). The shaded wedge = what that camera
+      sees. Notice neighbours <b>share</b> a big slice — that shared slice is what lets us
+      match them.</p>
+      <p class="note">Hover a shot to see its ~90° view cone and which neighbours it
+      overlaps.</p>
+      <div class="legend">
+        <span><span class="dot" style="background:var(--red)"></span>camera / shot</span>
+        <span><span class="dot" style="background:var(--accent);opacity:.5"></span>field of view</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====================== 2 PAIRS (the question) ====================== -->
+<section id="pairs">
+  <h2><span class="step">2</span> Where do the “45 pairs” come from?</h2>
+  <p class="sub">To find which shots overlap, the code <b>compares every shot with every
+  other shot</b>. It doesn't know in advance which ones line up, so it tries all combinations.</p>
+
+  <div class="grid2">
+    <div>
+      <svg id="pairsSvg" viewBox="0 0 320 320"></svg>
+      <div class="controls">
+        <button id="btnAll" class="on">All 45 pairs</button>
+        <button id="btnRing">Only neighbours (the chain)</button>
+        <span class="mono" id="pairCount" style="color:var(--accent)"></span>
+      </div>
+      <p class="note">Hover any shot → it lights up its <b>9</b> possible partners.</p>
+    </div>
+    <div class="card">
+      <p>It's the <b>handshake problem</b>: 10 people in a room, how many unique handshakes?
+      Each of the 10 shots can pair with the other 9, but pair (3,7) is the same as (7,3),
+      so divide by 2:</p>
+      <p class="mono block">C(10,2) = 10 × 9 / 2 = <b style="color:var(--accent)">45</b></p>
+      <p>So the code runs the matching routine <b>45 times</b>, once per unique pair. Most
+      pairs <b>don't</b> overlap (e.g. shot 0 vs shot 5 face opposite walls) → rejected.
+      Only the pairs that truly share a view survive — about <b>11</b> of them here.</p>
+      <div class="legend">
+        <span><span class="dot" style="background:var(--green)"></span>neighbour pair (overlaps, kept)</span>
+        <span><span class="dot" style="background:var(--line)"></span>tried, usually rejected</span>
+      </div>
+    </div>
+  </div>
+
+  <h3 style="margin-top:22px">The same 45, as a table</h3>
+  <p class="sub">Every cell above the diagonal is one pair. Count them → 45. The diagonal
+  neighbours (0-1, 1-2, …) plus the wrap (0-9) are the ones that reliably overlap.</p>
+  <div class="matrixwrap"><svg id="matrixSvg" viewBox="0 0 470 470"></svg></div>
+</section>
+
+<!-- ====================== 3 BACKPROJECT ====================== -->
+<section id="backproject">
+  <h2><span class="step">3</span> Turn each shot's depth map into 3D points</h2>
+  <p class="sub">Before matching, every shot becomes a little 3D cloud in <i>its own</i>
+  camera frame. The depth camera gives a distance <span class="mono">Z</span> for each pixel;
+  the pinhole formula spreads pixels out into 3D.</p>
+  <div class="grid2">
+    <svg id="bpSvg" viewBox="0 0 360 240"></svg>
+    <div>
+      <p class="mono block"><span class="cm"># pixel (u,v) + depth Z  →  3D point</span>
+Z = depth(u, v)
+X = (u − ppx) · Z / fx
+Y = (v − ppy) · Z / fy</p>
+      <p><span class="mono">fx, fy</span> = focal length, <span class="mono">ppx, ppy</span>
+      = image centre (from <span class="mono">intrinsics.txt</span>). A pixel near the
+      image centre with depth 0.5 m lands almost straight ahead; a pixel near the edge
+      lands off to the side. Function: <span class="mono">back_project_dense()</span>.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ====================== 4 FEATURES ====================== -->
+<section id="features">
+  <h2><span class="step">4</span> Find & match landmarks between two shots</h2>
+  <p class="sub">For a pair that overlaps, find the <b>same physical points</b> in both shots.</p>
+
+  <div class="answer">
+    <div class="big2">We match on the raw IR photo — not the depth map.</div>
+    <p>Features are detected and matched on <span class="mono">ir_left.png</span> (the raw
+    infrared image). The depth map <span class="mono">depth.npy</span> is used <b>only</b> to
+    attach a 3D coordinate to each matched feature. <span class="mono">ir_right.png</span> is
+    <b>not</b> used here — it was already spent earlier to compute the depth.</p>
+  </div>
+
+  <h3>Two tracks: appearance vs geometry</h3>
+  <p class="sub">Matching is pure image work (blue). Depth (orange) only attaches 3D
+  coordinates. They join at the end to form 3D↔3D correspondences.</p>
+  <div class="flowwrap">
+    <div class="lane">
+      <span class="lanetag blue">IMAGE — what we match on</span>
+      <div class="frow">
+        <div class="fbox img">ir_left.png<i>raw IR</i></div><span class="arr">→</span>
+        <div class="fbox img">CLAHE<i>brighten</i></div><span class="arr">→</span>
+        <div class="fbox img">ORB<i>corners</i></div><span class="arr">→</span>
+        <div class="fbox img">descriptors<i>fingerprints</i></div><span class="arr">→</span>
+        <div class="fbox img">match A↔B<i>Lowe + mutual</i></div><span class="arr">→</span>
+        <div class="fbox img">fundamental<i>2D RANSAC filter</i></div>
+      </div>
+    </div>
+    <div class="lane">
+      <span class="lanetag orange">DEPTH — geometry only</span>
+      <div class="frow">
+        <div class="fbox dep">depth.npy<i>distance / pixel</i></div><span class="arr">→</span>
+        <div class="fbox dep">lift keypoint → 3D<i>X=(x−ppx)Z/fx …</i></div>
+      </div>
+    </div>
+    <div class="lane">
+      <span class="lanetag gray">UNUSED in step 4</span>
+      <div class="frow">
+        <div class="fbox un">ir_right.png<i>already used to build depth.npy</i></div>
+      </div>
+    </div>
+    <div class="frow joinrow">
+      <div class="fbox join">clean 2D matches&nbsp; ✚ &nbsp;their 3D coords&nbsp; → &nbsp;<b>3D↔3D correspondences</b>&nbsp; → &nbsp;Step 5 (Kabsch)</div>
+    </div>
+  </div>
+
+  <h3>The sub-steps</h3>
+  <div class="grid2">
+    <div class="card">
+      <b>a. Brighten the IR (CLAHE)</b> <span class="pill blue">image</span>
+      <p>IR is dim (avg ~55/255); the detector found ~30 corners. CLAHE boosts local
+      contrast → ~30× more. Detection-only — the original IR still colours the cloud.</p>
+      <svg id="claheSvg" viewBox="0 0 320 90"></svg>
+    </div>
+    <div class="card">
+      <b>b. Detect corners (ORB)</b> <span class="pill blue">image</span>
+      <p>~3000 corners/image, each with a 256-bit binary <i>descriptor</i> (a fingerprint of
+      its texture patch). SIFT is a stronger fallback when ORB is weak on a pair.</p>
+    </div>
+    <div class="card">
+      <b>c. Lift to 3D</b> <span class="pill" style="border-color:var(--yellow);color:var(--yellow)">depth used HERE only</span>
+      <p>Each corner reads depth in a 5×5 window → <b>median</b> (noise-robust), reject if
+      zero or the window varies &gt;20&nbsp;cm. Back-project the survivors to a 3D point.
+      This is the <b>only</b> place depth enters step 4.</p>
+    </div>
+    <div class="card">
+      <b>d. Match + clean</b> <span class="pill blue">image</span>
+      <p><b>Lowe 0.75</b>: best match must clearly beat the 2nd-best (drop ambiguous).
+      <b>Mutual</b>: A and B must pick each other. Then a <b>fundamental-matrix RANSAC</b> on
+      the 2D image coords removes geometrically-impossible matches (red below).</p>
+    </div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <svg id="matchSvg" viewBox="0 0 640 230"></svg>
+    <div class="legend">
+      <span><span class="dot" style="background:var(--green)"></span>good match (kept)</span>
+      <span><span class="dot" style="background:var(--red)"></span>false match (removed by Lowe + fundamental-matrix RANSAC)</span>
+    </div>
+    <p class="note">Each surviving green match is the <b>same point</b> in shot A and shot B.
+    Step c gave it a 3D position in each → the match becomes a pair of <b>3D points</b>, the
+    input to Kabsch.</p>
+  </div>
+
+  <div class="note"><b>Why match on IR, not the depth map?</b> Depth maps are smooth, noisy
+  and full of holes — no fine texture for descriptors to lock onto. Raw IR has real texture
+  (edges, patterns) → distinctive, repeatable features. Standard RGB-D practice: <b>match on
+  appearance, measure geometry from depth.</b></div>
+</section>
+
+<!-- ====================== CONCEPTS ====================== -->
+<section id="concepts">
+  <h2>🔍 Concepts behind step 4</h2>
+  <p class="sub">Three terms from step 4, explained plainly — with where each is used.</p>
+
+  <!-- ===== CLAHE ===== -->
+  <h3 style="margin-top:6px">1 · CLAHE
+    <span class="pill" style="border-color:var(--green);color:var(--green)">used in step 4a</span></h3>
+  <p class="sub">Contrast Limited Adaptive Histogram Equalization — a contrast booster.</p>
+  <div class="grid2">
+    <div>
+      <p>A <b>histogram</b> counts how many pixels have each brightness (0=black … 255=white).
+      The IR is dim, so all the counts bunch into a narrow dark band — faint texture is there
+      but invisible.</p>
+      <ul>
+        <li><b>Equalization</b> — stretch/spread the brightnesses across the full 0–255 range
+          → contrast up, faint texture becomes visible.</li>
+        <li><b>Adaptive</b> — done separately on each small <b>8×8 tile</b>, not the whole
+          image → fixes uneven lighting (one bright corner won't wash out the rest).</li>
+        <li><b>Contrast Limited</b> — cap (clip) the tallest histogram bars first
+          (<span class="mono">clipLimit=3.0</span>) so flat areas don't blow up into noise.</li>
+      </ul>
+      <p>Result: dim shots went from ~30 detectable corners to ~900. Code:
+      <span class="mono">cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))</span> in
+      <span class="mono">_detect()</span>.</p>
+    </div>
+    <div class="card">
+      <svg id="claheHistSvg" viewBox="0 0 340 150"></svg>
+      <p class="sub" style="text-align:center;margin:4px 0 0">brightness histogram: bunched (dim) → spread (clear)</p>
+    </div>
+  </div>
+
+  <!-- ===== ORB ===== -->
+  <h3 style="margin-top:24px">2 · ORB
+    <span class="pill" style="border-color:var(--accent);color:var(--accent)">used in step 4b</span></h3>
+  <p class="sub">Oriented FAST + Rotated BRIEF — a fast, free corner detector + describer.</p>
+  <div class="grid2">
+    <div class="card">
+      <svg id="fastSvg" viewBox="0 0 300 200"></svg>
+      <p class="sub" style="text-align:center;margin:4px 0 0">FAST: ring of 16 pixels around a candidate</p>
+    </div>
+    <div>
+      <p>ORB does two jobs:</p>
+      <ul>
+        <li><b>FAST = the detector.</b> For a candidate pixel, look at the ring of 16 pixels
+          around it. If <b>≥9 in a row</b> are all <i>brighter</i> (or all <i>darker</i>) than
+          the centre by a threshold → it's a corner. Only comparisons → very fast.</li>
+        <li><b>BRIEF = the descriptor</b> (next concept) — turns each corner's patch into a
+          binary fingerprint.</li>
+        <li><b>ORB extras</b> — gives each corner an <b>orientation</b> (so the fingerprint is
+          rotation-invariant, vital for our ~40° spin) and runs on a <b>scale pyramid</b>.</li>
+      </ul>
+      <p>Output per corner: <span class="mono">(x, y, angle, scale)</span> + a 256-bit
+      descriptor. ~3000/image. Free + light → great on the Pi. Code:
+      <span class="mono">cv2.ORB_create(nfeatures=3000)</span>.</p>
+    </div>
+  </div>
+
+  <!-- ===== DESCRIPTOR ===== -->
+  <h3 style="margin-top:24px">3 · The descriptor (fingerprint)
+    <span class="pill" style="border-color:var(--purple);color:var(--purple)">built in 4b, compared in 4d</span></h3>
+  <p class="sub">How a patch of pixels becomes a number you can compare.</p>
+  <div class="grid2">
+    <div>
+      <p>ORB uses <b>BRIEF</b>. Around the corner, a <b>fixed set of 256 point-pairs</b> is
+      sampled inside the patch. For each pair (a, b), one test:</p>
+      <p class="mono block">intensity(a) &lt; intensity(b)  ?  bit = 1  :  bit = 0</p>
+      <p>256 tests → a <b>256-bit string</b> = the fingerprint. The patch is first rotated to
+      the corner's orientation, so the <b>same physical corner gives the same bits</b> even
+      after the camera turned.</p>
+      <p><b>Comparing two fingerprints</b> = <b>Hamming distance</b>: XOR them, count the
+      differing bits. Small distance → same patch → candidate match. A CPU does this in
+      nanoseconds, so matching 3000×3000 is cheap.</p>
+      <p class="note">SIFT (our fallback) instead builds a 128-number vector from
+      gradient-orientation histograms, compared by ordinary (L2) distance — heavier but more
+      robust. Same idea: patch → comparable number.</p>
+    </div>
+    <div class="card">
+      <svg id="briefSvg" viewBox="0 0 360 260"></svg>
+      <p class="sub" style="text-align:center;margin:4px 0 0">256 pixel-pair tests → 256 bits; XOR two → Hamming distance</p>
+    </div>
+  </div>
+</section>
+
+<!-- ====================== 5 KABSCH ====================== -->
+<section id="kabsch">
+  <h2><span class="step">5</span> Solve the rotation between the pair (Kabsch + RANSAC)</h2>
+  <p class="sub">We have the same points in two clouds. Find the single rotation + shift
+  that lays one cloud exactly onto the other — that <b>is</b> the camera's turn between the
+  two shots.</p>
+  <div class="grid2">
+    <div>
+      <svg id="kabschSvg" viewBox="0 0 360 230"></svg>
+      <div class="controls"><button id="btnAlign">▶ Align the two clouds</button></div>
+    </div>
+    <div>
+      <p class="mono block"><span class="cm"># matched 3D points P (in A) and Q (in B)</span>
+H   = Pcᵀ · Qc          <span class="cm"># cross-covariance</span>
+U,S,Vᵀ = SVD(H)
+R   = V · diag(1,1,±1) · Uᵀ   <span class="cm"># rotation</span>
+t   = mean(Q) − R · mean(P)   <span class="cm"># shift</span></p>
+      <p>This is the <b>Kabsch</b> algorithm — a closed-form best-fit rotation. Wrapped in
+      <b>RANSAC</b>: pick 3 random matches, fit, count how many other matches agree (within
+      6 cm), keep the best fit, refit on all agreers. RANSAC throws out any wrong match that
+      slipped through. Functions: <span class="mono">kabsch()</span>,
+      <span class="mono">kabsch_ransac()</span>.</p>
+      <p class="note">Output per pair = a transform <span class="mono">T</span> (rotation R +
+      shift t). No angle was assumed — it's <b>measured</b> from the points.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ====================== 6 POSE GRAPH ====================== -->
+<section id="graph">
+  <h2><span class="step">6</span> Make all 10 agree (pose graph + loop closure)</h2>
+  <p class="sub">Chaining the pair-transforms 0→1→2→…→9 builds up small errors (<b>drift</b>):
+  by the time you reach shot 9 it doesn't line up with shot 0, leaving a gap. The wrap pair
+  <b>(9,0)</b> says “these two actually overlap” — that contradiction reveals the drift, and
+  we spread the correction over all 10 shots.</p>
+  <div class="grid2">
+    <div>
+      <svg id="graphSvg" viewBox="0 0 360 320"></svg>
+      <div class="controls">
+        <button id="btnDrift" class="on">Raw chain (drift, gap)</button>
+        <button id="btnOpt">After loop-closure optimize</button>
+      </div>
+    </div>
+    <div class="card">
+      <p><b>Nodes</b> = the 10 shots. <b>Edges</b> = the measured pair-transforms from step 5:</p>
+      <ul>
+        <li><span class="green">Green</span> = neighbour edges (the chain, trusted).</li>
+        <li><span class="yellow">Yellow</span> = the loop-closure edge 9→0.</li>
+      </ul>
+      <p>Open3D's <span class="mono">global_optimization</span> (Levenberg–Marquardt) nudges
+      all 10 poses at once so every edge is satisfied as well as possible → the gap closes
+      and the ring is consistent. Function: <span class="mono">optimize_poses()</span>.</p>
+      <p class="note">Press <b>optimize</b> on the left to watch the gap close.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ====================== 7 MERGE ====================== -->
+<section id="merge">
+  <h2><span class="step">7</span> Stack, clean, colour → the final cloud</h2>
+  <p class="sub">Now each shot has a correct pose in one shared frame. Re-project every
+  shot's full depth, move it by its pose, and pile them together.</p>
+  <div class="grid2">
+    <div>
+      <svg id="donutSvg" viewBox="0 0 300 300"></svg>
+      <div class="legend">
+        <span><span class="dot" style="background:var(--red)"></span>close</span>
+        <span><span class="dot" style="background:var(--green)"></span>mid</span>
+        <span><span class="dot" style="background:var(--blue)"></span>far</span>
+      </div>
+    </div>
+    <div>
+      <ul>
+        <li><b>Stack</b> all 10 transformed clouds into one.</li>
+        <li><b>Voxel downsample</b> (5 mm grid) — the heavy overlap means many duplicate
+        points; keep one per cell.</li>
+        <li><b>Outlier removal</b> — drop floating specks (passive-stereo noise).</li>
+        <li><b>Colour by distance</b> — <span class="red">red = close</span>,
+        <span class="blue">blue = far</span>.</li>
+      </ul>
+      <p>The top-down view is a <b>donut</b>: an empty hole in the middle (where the robot
+      stood — it can't see itself) ringed by the room. The clean hole proves all 10 poses
+      converge on one centre = the alignment is correct. Functions:
+      <span class="mono">shot_world_cloud()</span>, <span class="mono">finalize()</span>.</p>
+      <p class="note">The real output is <span class="mono">pointcloud_360.ply</span> +
+      <span class="mono">pointcloud_360_preview.png</span> in this folder.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ====================== NUMBERS ====================== -->
+<section id="numbers">
+  <h2>Key numbers (for reference)</h2>
+  <table>
+    <tr><th>Thing</th><th>Value</th><th>Why</th></tr>
+    <tr><td>Shots</td><td>10</td><td>one spin, ~36–40° apart</td></tr>
+    <tr><td>Pairs tried</td><td><b>45</b></td><td>C(10,2) = every shot vs every other</td></tr>
+    <tr><td>Pairs kept</td><td>~11</td><td>only the ones that really overlap</td></tr>
+    <tr><td>Features / image</td><td>3000 ORB</td><td>on the CLAHE-brightened IR</td></tr>
+    <tr><td>CLAHE clip</td><td>3.0</td><td>the fix — dim IR → ~30× more features</td></tr>
+    <tr><td>Match filter</td><td>Lowe 0.75 + fundamental 2 px</td><td>kill false matches</td></tr>
+    <tr><td>RANSAC inlier</td><td>6 cm</td><td>passive-stereo depth noise ~5–12 cm</td></tr>
+    <tr><td>Min inliers / edge</td><td>6</td><td>accept a pair only if this many agree</td></tr>
+    <tr><td>Loop closure</td><td>edge 9→0</td><td>closes the ring, removes drift</td></tr>
+    <tr><td>Final voxel</td><td>5 mm</td><td>dedup overlap</td></tr>
+    <tr><td>Depth band</td><td>0.15–2.0 m</td><td>D405 is short range</td></tr>
+  </table>
+  <p class="sub" style="margin-top:14px">One sentence: <i>recover each camera's angle by
+  matching image features between overlapping shots, solve the rotation from the matched 3D
+  points (Kabsch+RANSAC), make all 10 globally consistent with a pose graph + loop closure,
+  then stack and colour by depth.</i></p>
+</section>
+
+</main>
+
+<script>
+const NS="http://www.w3.org/2000/svg";
+const N=10;
+function el(t,a){const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);return e;}
+function ringPos(i,cx,cy,r){const a=(-90+i*360/N)*Math.PI/180;return[cx+r*Math.cos(a),cy+r*Math.sin(a)];}
+
+/* ---------- 1. ring of shots with FOV ---------- */
+(function(){
+  const s=document.getElementById("ringSvg"),cx=180,cy=160,r=110;
+  s.appendChild(el("circle",{cx,cy,r:4,fill:"#555"}));
+  s.appendChild(el("text",{x:cx,y:cy-8,fill:"#9aa7b4","font-size":11,"text-anchor":"middle"}));
+  const cones=el("g",{}); s.appendChild(cones);
+  for(let i=0;i<N;i++){
+    const [x,y]=ringPos(i,cx,cy,r);
+    const ang=-90+i*360/N;
+    // fov wedge
+    const fov=90, a1=(ang-fov/2)*Math.PI/180, a2=(ang+fov/2)*Math.PI/180, R=70;
+    const p=el("path",{d:`M ${x} ${y} L ${x+R*Math.cos(a1)} ${y+R*Math.sin(a1)} A ${R} ${R} 0 0 1 ${x+R*Math.cos(a2)} ${y+R*Math.sin(a2)} Z`,
+      fill:"#58a6ff",opacity:0.0,stroke:"none"});
+    cones.appendChild(p);
+    const dot=el("circle",{cx:x,cy:y,r:8,fill:"#ff6b6b",stroke:"#0e1116","stroke-width":2,cursor:"pointer"});
+    const lbl=el("text",{x:x,y:y+4,fill:"#04121f","font-size":10,"text-anchor":"middle","font-weight":700,cursor:"pointer"});
+    lbl.textContent=i;
+    dot.onmouseenter=lbl.onmouseenter=()=>{p.setAttribute("opacity",.45);dot.setAttribute("r",10);};
+    dot.onmouseleave=lbl.onmouseleave=()=>{p.setAttribute("opacity",0);dot.setAttribute("r",8);};
+    s.appendChild(dot);s.appendChild(lbl);
+  }
+})();
+
+/* ---------- 2a. pairs circle ---------- */
+(function(){
+  const s=document.getElementById("pairsSvg"),cx=160,cy=160,r=120;
+  const edges=el("g",{}); s.appendChild(edges);
+  const isRing=(i,j)=>Math.abs(i-j)===1||(i===0&&j===N-1)||(j===0&&i===N-1);
+  const lines=[];
+  for(let i=0;i<N;i++)for(let j=i+1;j<N;j++){
+    const [x1,y1]=ringPos(i,cx,cy,r),[x2,y2]=ringPos(j,cx,cy,r);
+    const ln=el("line",{x1,y1,x2,y2,stroke:isRing(i,j)?"#3fb950":"#30363d",
+      "stroke-width":isRing(i,j)?2:1,opacity:isRing(i,j)?.9:.5});
+    ln._i=i;ln._j=j;edges.appendChild(ln);lines.push(ln);
+  }
+  const nodes=[];
+  for(let i=0;i<N;i++){
+    const [x,y]=ringPos(i,cx,cy,r);
+    const d=el("circle",{cx:x,cy:y,r:11,fill:"#ff6b6b",stroke:"#0e1116","stroke-width":2,cursor:"pointer"});
+    const t=el("text",{x,y:y+4,fill:"#04121f","font-size":11,"text-anchor":"middle","font-weight":700,cursor:"pointer"});
+    t.textContent=i;
+    const hov=()=>{lines.forEach(l=>{const on=(l._i===i||l._j===i);
+      l.setAttribute("opacity",on?1:.06);l.setAttribute("stroke",on?"#58a6ff":"#30363d");l.setAttribute("stroke-width",on?2.5:1);});
+      cnt.textContent="shot "+i+" → 9 partners";};
+    const out=()=>{render();};
+    d.onmouseenter=t.onmouseenter=hov;d.onmouseleave=t.onmouseleave=out;
+    s.appendChild(d);s.appendChild(t);nodes.push([x,y]);
+  }
+  const cnt=document.getElementById("pairCount");
+  let mode="all";
+  function render(){
+    lines.forEach(l=>{const ring=isRing(l._i,l._j);
+      if(mode==="ring"){l.setAttribute("opacity",ring?1:.05);
+        l.setAttribute("stroke",ring?"#3fb950":"#30363d");l.setAttribute("stroke-width",ring?2.5:1);}
+      else{l.setAttribute("opacity",ring?.95:.5);
+        l.setAttribute("stroke",ring?"#3fb950":"#30363d");l.setAttribute("stroke-width",ring?2:1);}});
+    cnt.textContent=mode==="ring"?"10 overlapping pairs (kept)":"45 pairs total";
+  }
+  const bAll=document.getElementById("btnAll"),bRing=document.getElementById("btnRing");
+  bAll.onclick=()=>{mode="all";bAll.classList.add("on");bRing.classList.remove("on");render();};
+  bRing.onclick=()=>{mode="ring";bRing.classList.add("on");bAll.classList.remove("on");render();};
+  render();
+})();
+
+/* ---------- 2b. triangular matrix ---------- */
+(function(){
+  const s=document.getElementById("matrixSvg"),o=40,c=40;
+  for(let i=0;i<N;i++){
+    s.appendChild(el("text",{x:o+i*c+c/2,y:24,fill:"#9aa7b4","font-size":12,"text-anchor":"middle",textContent:i})).textContent=i;
+    s.appendChild(el("text",{x:18,y:o+i*c+c/2+4,fill:"#9aa7b4","font-size":12,"text-anchor":"middle",textContent:i})).textContent=i;
+  }
+  let count=0;
+  const isRing=(i,j)=>j===i+1||(i===0&&j===N-1);
+  for(let i=0;i<N;i++)for(let j=0;j<N;j++){
+    const x=o+j*c,y=o+i*c;
+    if(j>i){count++;
+      const fill=isRing(i,j)?"#16341f":"#1c2230",stroke=isRing(i,j)?"#3fb950":"#30363d";
+      const rect=el("rect",{x:x+2,y:y+2,width:c-4,height:c-4,rx:5,fill,stroke,"stroke-width":1,cursor:"pointer"});
+      const tip=el("title",{});tip.textContent=`pair (${i},${j})`+(isRing(i,j)?" — neighbour, kept":"");
+      rect.appendChild(tip);
+      rect.onmouseenter=()=>rect.setAttribute("fill","#2a3550");
+      rect.onmouseleave=()=>rect.setAttribute("fill",fill);
+      s.appendChild(rect);
+    }else{
+      s.appendChild(el("rect",{x:x+2,y:y+2,width:c-4,height:c-4,rx:5,fill:"#0d1117",stroke:"#171c24"}));
+    }
+  }
+  const t=el("text",{x:o+5.5*c,y:o+9.4*c,fill:"#58a6ff","font-size":15,"font-weight":700});
+  t.textContent="cells above diagonal = "+count+" pairs";
+  s.appendChild(t);
+})();
+
+/* ---------- 3. backproject ---------- */
+(function(){
+  const s=document.getElementById("bpSvg");
+  // image grid left
+  for(let r=0;r<5;r++)for(let cc=0;cc<6;cc++){
+    s.appendChild(el("rect",{x:20+cc*16,y:40+r*16,width:15,height:15,fill:"#1c2230",stroke:"#30363d"}));
+  }
+  s.appendChild(el("text",{x:60,y:30,fill:"#9aa7b4","font-size":11,textContent:"depth image (pixels)"})).textContent="depth image (pixels)";
+  // camera
+  s.appendChild(el("circle",{cx:150,cy:120,r:5,fill:"#58a6ff"}));
+  // rays to 3D points right
+  const pts=[[250,55],[300,80],[270,130],[320,150],[255,180],[300,200]];
+  pts.forEach(p=>{s.appendChild(el("line",{x1:150,y1:120,x2:p[0],y2:p[1],stroke:"#30363d","stroke-width":1}));
+    const col=p[0]<285?"#ff6b6b":"#4aa3ff";
+    s.appendChild(el("circle",{cx:p[0],cy:p[1],r:5,fill:col}));});
+  s.appendChild(el("text",{x:285,y:30,fill:"#9aa7b4","font-size":11,textContent:"3D points (X,Y,Z)"})).textContent="3D points (X,Y,Z)";
+  s.appendChild(el("text",{x:120,y:140,fill:"#58a6ff","font-size":10,textContent:"camera"})).textContent="camera";
+})();
+
+/* ---------- 4a. CLAHE bars ---------- */
+(function(){
+  const s=document.getElementById("claheSvg");
+  s.appendChild(el("rect",{x:10,y:20,width:120,height:50,fill:"#2a2f38",rx:4}));
+  s.appendChild(el("text",{x:70,y:50,fill:"#6e7d8c","font-size":12,"text-anchor":"middle",textContent:"~30 corners"})).textContent="dim IR: ~30 corners";
+  s.appendChild(el("text",{x:160,y:50,fill:"#58a6ff","font-size":18,"text-anchor":"middle",textContent:"→"})).textContent="→";
+  s.appendChild(el("rect",{x:190,y:20,width:120,height:50,fill:"#cdd9e5",rx:4}));
+  // scattered corner dots on bright one
+  for(let k=0;k<26;k++)s.appendChild(el("circle",{cx:196+Math.random()*108,cy:24+Math.random()*42,r:1.7,fill:"#bc2c2c"}));
+  s.appendChild(el("text",{x:250,y:88,fill:"#3fb950","font-size":11,"text-anchor":"middle",textContent:"CLAHE: ~900 corners"})).textContent="CLAHE: ~900 corners";
+})();
+
+/* ---------- 4c. matches ---------- */
+(function(){
+  const s=document.getElementById("matchSvg");
+  s.appendChild(el("rect",{x:20,y:30,width:260,height:170,fill:"#11161d",stroke:"#30363d",rx:6}));
+  s.appendChild(el("rect",{x:360,y:30,width:260,height:170,fill:"#11161d",stroke:"#30363d",rx:6}));
+  s.appendChild(el("text",{x:150,y:222,fill:"#9aa7b4","font-size":12,"text-anchor":"middle",textContent:"shot A"})).textContent="shot A";
+  s.appendChild(el("text",{x:490,y:222,fill:"#9aa7b4","font-size":12,"text-anchor":"middle",textContent:"shot B (turned ~40°)"})).textContent="shot B (turned ~40°)";
+  // good matches: consistent shift
+  const A=[[70,70],[120,110],[90,160],[180,90],[210,150],[150,60]];
+  const shift=180;
+  A.forEach((p,k)=>{const bx=p[0]+shift-30+( (k%2)*4 ),by=p[1]+ ((k%3)-1)*3;
+    s.appendChild(el("circle",{cx:p[0],cy:p[1],r:4,fill:"#3fb950"}));
+    s.appendChild(el("circle",{cx:bx,cy:by,r:4,fill:"#3fb950"}));
+    s.appendChild(el("line",{x1:p[0],y1:p[1],x2:bx,y2:by,stroke:"#3fb950","stroke-width":1.3,opacity:.8}));});
+  // a couple of false matches: random crossing
+  const bad=[[100,80,520,170],[200,120,420,60]];
+  bad.forEach(b=>{s.appendChild(el("circle",{cx:b[0],cy:b[1],r:4,fill:"#ff6b6b"}));
+    s.appendChild(el("circle",{cx:b[2],cy:b[3],r:4,fill:"#ff6b6b"}));
+    s.appendChild(el("line",{x1:b[0],y1:b[1],x2:b[2],y2:b[3],stroke:"#ff6b6b","stroke-width":1.3,"stroke-dasharray":"4 3"}));});
+})();
+
+/* ---------- 5. kabsch align ---------- */
+(function(){
+  const s=document.getElementById("kabschSvg");
+  const base=[[0,0],[40,10],[20,50],[60,40],[80,15],[30,80]];
+  const cxA=90,cyA=70, cxB=250,cyB=150, rot=-0.7;
+  const gA=el("g",{}),gB=el("g",{}),gL=el("g",{});
+  s.appendChild(gL);s.appendChild(gA);s.appendChild(gB);
+  const A=base.map(p=>[cxA+p[0],cyA+p[1]]);
+  const B=base.map(p=>{const x=p[0]*Math.cos(rot)-p[1]*Math.sin(rot),y=p[0]*Math.sin(rot)+p[1]*Math.cos(rot);return [cxB+x,cyB+y];});
+  A.forEach(p=>gA.appendChild(el("circle",{cx:p[0],cy:p[1],r:5,fill:"#ff6b6b"})));
+  B.forEach(p=>gB.appendChild(el("circle",{cx:p[0],cy:p[1],r:5,fill:"#4aa3ff"})));
+  const links=A.map((p,k)=>{const l=el("line",{x1:p[0],y1:p[1],x2:B[k][0],y2:B[k][1],stroke:"#f2cc60","stroke-width":1,opacity:.5});gL.appendChild(l);return l;});
+  s.appendChild(el("text",{x:cxA,y:cyA-18,fill:"#ff6b6b","font-size":11,textContent:"cloud A"})).textContent="cloud A";
+  s.appendChild(el("text",{x:cxB-10,y:cyB-40,fill:"#4aa3ff","font-size":11,textContent:"cloud B"})).textContent="cloud B";
+  let t=0,anim=null;
+  document.getElementById("btnAlign").onclick=()=>{
+    if(anim)cancelAnimationFrame(anim);t=0;
+    const step=()=>{t=Math.min(1,t+0.02);
+      gB.setAttribute("transform",`translate(${(cxA-cxB)*t},${(cyA-cyB)*t}) rotate(${(-rot*180/Math.PI)*t},${cxB},${cyB})`);
+      links.forEach((l,k)=>l.setAttribute("opacity",.5*(1-t)));
+      if(t<1)anim=requestAnimationFrame(step);};
+    step();
+  };
+})();
+
+/* ---------- 6. pose graph drift vs optimized ---------- */
+(function(){
+  const s=document.getElementById("graphSvg"),cx=180,cy=160,r=115;
+  // optimized = even ring; drift = ring but accumulating angular error so 9 lands short of 0
+  const opt=[],drift=[];
+  for(let i=0;i<N;i++){opt.push(ringPos(i,cx,cy,r));}
+  for(let i=0;i<N;i++){const a=(-90+i*(360/N)*1.10)*Math.PI/180; // 10% over per step -> gap
+    drift.push([cx+r*Math.cos(a),cy+r*Math.sin(a)]);}
+  const gE=el("g",{}),gN=el("g",{}); s.appendChild(gE);s.appendChild(gN);
+  let cur=drift.map(p=>p.slice());
+  const ringEdges=[];for(let i=0;i<N-1;i++)ringEdges.push([i,i+1]);
+  const loop=[N-1,0];
+  function draw(){
+    gE.innerHTML="";gN.innerHTML="";
+    ringEdges.forEach(([i,j])=>gE.appendChild(el("line",{x1:cur[i][0],y1:cur[i][1],x2:cur[j][0],y2:cur[j][1],stroke:"#3fb950","stroke-width":2})));
+    gE.appendChild(el("line",{x1:cur[loop[0]][0],y1:cur[loop[0]][1],x2:cur[loop[1]][0],y2:cur[loop[1]][1],
+      stroke:"#f2cc60","stroke-width":2.5,"stroke-dasharray":"6 4"}));
+    for(let i=0;i<N;i++){gN.appendChild(el("circle",{cx:cur[i][0],cy:cur[i][1],r:10,fill:"#ff6b6b",stroke:"#0e1116","stroke-width":2}));
+      const t=el("text",{x:cur[i][0],y:cur[i][1]+4,fill:"#04121f","font-size":10,"text-anchor":"middle","font-weight":700});t.textContent=i;gN.appendChild(t);}
+  }
+  draw();
+  const bD=document.getElementById("btnDrift"),bO=document.getElementById("btnOpt");
+  let anim=null;
+  function animateTo(target,t0){if(anim)cancelAnimationFrame(anim);let t=0;const from=cur.map(p=>p.slice());
+    const step=()=>{t=Math.min(1,t+0.04);cur=from.map((p,i)=>[p[0]+(target[i][0]-p[0])*t,p[1]+(target[i][1]-p[1])*t]);draw();
+      if(t<1)anim=requestAnimationFrame(step);};step();}
+  bD.onclick=()=>{bD.classList.add("on");bO.classList.remove("on");animateTo(drift);};
+  bO.onclick=()=>{bO.classList.add("on");bD.classList.remove("on");animateTo(opt);};
+})();
+
+/* ---------- 7. donut ---------- */
+(function(){
+  const s=document.getElementById("donutSvg"),cx=150,cy=150;
+  for(let k=0;k<1400;k++){
+    const a=Math.random()*2*Math.PI;
+    const rr=55+Math.pow(Math.random(),1.5)*85;          // ring, denser inside
+    const x=cx+rr*Math.cos(a),y=cy+rr*Math.sin(a);
+    const f=(rr-55)/85;                                   // 0 near .. 1 far
+    const col=f<.33?"#ff6b6b":f<.66?"#3fb950":"#4aa3ff";
+    s.appendChild(el("circle",{cx:x,cy:y,r:1.5,fill:col,opacity:.85}));
+  }
+  s.appendChild(el("circle",{cx,cy,r:3,fill:"#888"}));
+  s.appendChild(el("text",{x:cx,y:cy+25,fill:"#9aa7b4","font-size":10,"text-anchor":"middle",textContent:"robot (empty)"})).textContent="robot (empty)";
+})();
+
+/* ---------- concepts: shared text helper ---------- */
+function T(p,x,y,str,o){const t=el("text",Object.assign({x,y,fill:"#9aa7b4","font-size":11},o||{}));t.textContent=str;p.appendChild(t);return t;}
+
+/* ---------- CLAHE histogram: bunched -> spread ---------- */
+(function(){
+  const s=document.getElementById("claheHistSvg");if(!s)return;
+  const base=118;
+  s.appendChild(el("line",{x1:30,y1:base,x2:150,y2:base,stroke:"#30363d"}));
+  s.appendChild(el("line",{x1:200,y1:base,x2:332,y2:base,stroke:"#30363d"}));
+  for(let i=0;i<14;i++){const x=66+i*3.0,d=Math.exp(-Math.pow((i-7)/3.2,2)),h=8+d*62;
+    s.appendChild(el("rect",{x,y:base-h,width:2.3,height:h,fill:"#6e7d8c"}));}
+  T(s,90,138,"dim IR (bunched)",{"text-anchor":"middle",fill:"#6e7d8c"});
+  T(s,175,base-48,"CLAHE",{"font-size":10,fill:"#58a6ff","text-anchor":"middle"});
+  T(s,175,base-28,"→",{"font-size":22,fill:"#58a6ff","text-anchor":"middle"});
+  for(let i=0;i<28;i++){const x=204+i*4.5,h=Math.max(12,16+45*(0.55+0.45*Math.sin(i/2.3))*(0.6+0.4*Math.random()));
+    s.appendChild(el("rect",{x,y:base-h,width:3,height:h,fill:"#7cc0ff"}));}
+  T(s,266,138,"after CLAHE (spread)",{"text-anchor":"middle",fill:"#7cc0ff"});
+})();
+
+/* ---------- FAST ring ---------- */
+(function(){
+  const s=document.getElementById("fastSvg");if(!s)return;
+  const cx=150,cy=92,R=62,sz=15,bright=new Set([0,1,2,3,4,5,6,7,8,9]);
+  for(let k=0;k<16;k++){const a=(-90+k*22.5)*Math.PI/180,x=cx+R*Math.cos(a)-sz/2,y=cy+R*Math.sin(a)-sz/2;
+    s.appendChild(el("rect",{x,y,width:sz,height:sz,rx:2,fill:bright.has(k)?"#f2cc60":"#2a2f38",stroke:"#30363d"}));}
+  s.appendChild(el("rect",{x:cx-sz/2,y:cy-sz/2,width:sz,height:sz,rx:2,fill:"#ff6b6b",stroke:"#0e1116","stroke-width":2}));
+  T(s,cx,cy+4,"p",{"text-anchor":"middle",fill:"#04121f","font-weight":700});
+  T(s,cx,182,"≥9 in a row brighter (yellow) → corner",{"text-anchor":"middle",fill:"#9aa7b4"});
+})();
+
+/* ---------- BRIEF descriptor + Hamming ---------- */
+(function(){
+  const s=document.getElementById("briefSvg");if(!s)return;
+  s.appendChild(el("rect",{x:20,y:24,width:120,height:120,rx:6,fill:"#11161d",stroke:"#30363d"}));
+  T(s,80,18,"patch around corner",{"text-anchor":"middle"});
+  const pairs=[[40,55,110,75],[60,125,95,45],[52,95,128,128],[88,58,45,132],[108,96,70,100],[122,52,62,82]];
+  pairs.forEach(p=>{s.appendChild(el("line",{x1:p[0],y1:p[1],x2:p[2],y2:p[3],stroke:"#58a6ff","stroke-width":1,opacity:.7}));
+    s.appendChild(el("circle",{cx:p[0],cy:p[1],r:3.2,fill:"#4aa3ff"}));
+    s.appendChild(el("circle",{cx:p[2],cy:p[3],r:3.2,fill:"#f2cc60"}));});
+  T(s,150,80,"→",{"font-size":20,fill:"#58a6ff"});
+  T(s,172,76,"1 0 1 1 0 1 0 0",{fill:"#cdd9e5","font-size":13,"font-family":"Consolas,monospace"});
+  T(s,172,94,"… 256 bits",{fill:"#6e7d8c","font-size":11});
+  T(s,178,68,"a<b? 1 : 0",{fill:"#6e7d8c","font-size":10,"text-anchor":"start"});
+  // Hamming compare
+  const A=[1,0,1,1,0,0,1,0,1,1,0,1],B=[1,0,0,1,0,0,1,1,1,1,0,1];
+  const sq=15,gap=3,x0=40;let diff=0;
+  function row(arr,y,xorRef){for(let i=0;i<arr.length;i++){let fill="#1c2230",bit=arr[i];
+      if(xorRef){bit=arr[i]^xorRef[i];if(bit)diff++;fill=bit?"#ff6b6b":"#1c2a20";}
+      else fill=bit?"#244a2c":"#1c2230";
+      s.appendChild(el("rect",{x:x0+i*(sq+gap),y,width:sq,height:sq,rx:2,fill,stroke:"#30363d"}));
+      T(s,x0+i*(sq+gap)+sq/2,y+sq-3.5,String(bit),{"text-anchor":"middle",fill:bit?"#e6edf3":"#5b6672","font-size":10});}}
+  T(s,18,182,"A",{fill:"#9aa7b4"}); row(A,174);
+  T(s,18,206,"B",{fill:"#9aa7b4"}); row(B,198);
+  T(s,18,232,"≠",{fill:"#ff6b6b"}); row(A,224,B);
+  T(s,40,252,"Hamming distance = "+diff+"  (fewer = better match)",{fill:"#f2cc60","font-size":12});
+})();
+</script>
+</body>
+</html>
