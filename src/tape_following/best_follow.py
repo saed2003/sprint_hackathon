@@ -16,10 +16,12 @@ from setup_and_api.api import RasBot
 
 # ═══════════════════════════════════════════════════════
 #  TUNING — only change these
+#  Sensor board: 70mm wide, inner pair ~12mm apart (P2/P3),
+#  outer pair ~55mm apart (P1/P4).
 # ═══════════════════════════════════════════════════════
-BASE_SPEED    = 90     # cruise speed on a straight
-Kp            = 45     # proportional gain: raise → sharper turns, lower → smoother
-SMOOTH        = 0.30   # motor smoothing: 0.1=silky, 0.3=balanced, 0.5=snappy
+BASE_SPEED    = 85     # cruise speed on a straight
+Kp            = 28     # was 45 — lower stops straight-line oscillation
+SMOOTH        = 0.22   # was 0.30 — slower settling reduces bounce
 LOST_SPEED    = 80     # sweep speed when searching for lost line
 DEBOUNCE      = 2      # consecutive all-off reads before declaring "lost"
 LOOP_DELAY    = 0.01   # 100 Hz
@@ -50,25 +52,25 @@ def main():
                 # error < 0 → tape is LEFT  → steer left
                 # error > 0 → tape is RIGHT → steer right
                 if L2 and R1:
-                    error = 0.0      # perfectly centered
+                    error = 0.0      # perfectly centered (both inner on tape)
                     lost_ticks = 0
                 elif L2 and not R1 and not R2:
-                    error = -1.0     # tape slightly left
+                    error = -1.0     # slight left — inner-left on, inner-right off
                     lost_ticks = 0
                 elif L1 and L2:
-                    error = -1.5     # tape further left
+                    error = -1.8     # medium left — both left sensors on
                     lost_ticks = 0
                 elif L1 and not L2:
-                    error = -2.0     # tape far left
+                    error = -2.5     # hard left — outer-left only (corner)
                     lost_ticks = 0
                 elif R1 and not L1 and not L2:
-                    error = 1.0      # tape slightly right
+                    error = 1.0      # slight right — inner-right on, inner-left off
                     lost_ticks = 0
                 elif R1 and R2:
-                    error = 1.5      # tape further right
+                    error = 1.8      # medium right — both right sensors on
                     lost_ticks = 0
                 elif R2 and not R1:
-                    error = 2.0      # tape far right
+                    error = 2.5      # hard right — outer-right only (corner)
                     lost_ticks = 0
                 else:
                     # ── 2. DEBOUNCE lost line (from line_follow.py) ────────
@@ -124,15 +126,15 @@ def run(bot, stop_event=None, **kwargs):
             elif L2 and not R1 and not R2:
                 error = -1.0;     lost_ticks = 0
             elif L1 and L2:
-                error = -1.5;     lost_ticks = 0
+                error = -1.8;     lost_ticks = 0
             elif L1 and not L2:
-                error = -2.0;     lost_ticks = 0
+                error = -2.5;     lost_ticks = 0
             elif R1 and not L1 and not L2:
                 error = 1.0;      lost_ticks = 0
             elif R1 and R2:
-                error = 1.5;      lost_ticks = 0
+                error = 1.8;      lost_ticks = 0
             elif R2 and not R1:
-                error = 2.0;      lost_ticks = 0
+                error = 2.5;      lost_ticks = 0
             else:
                 lost_ticks += 1
                 if lost_ticks < DEBOUNCE:
