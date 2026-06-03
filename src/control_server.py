@@ -15,6 +15,7 @@ import sys
 import json
 import math
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -30,11 +31,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 STREAM_SERVER_PORT = 8000
 CONTROL_SERVER_PORT = 9000
 CAMERA_SCRIPT = Path(__file__).parent / "camera" / "stream_server.py"
+OLED_SCRIPT = Path(__file__).parent / "oled_message.py"   # OLED splash (its own RasBot)
+STREAM_LOG = Path("/tmp/rasbot_stream.log")    # stream subprocess stdout/stderr
+OLED_LOG = Path("/tmp/rasbot_oled.log")        # OLED subprocess stdout/stderr
 
 # Global state
 stream_process = None
 stream_running = False
 start_time = None
+stream_log = None              # open file handle for the stream subprocess log
+oled_process = None            # OLED splash subprocess (oled_message.py)
+oled_log = None                # open file handle for the OLED subprocess log
 
 # ── Robot driving state ────────────────────────────────────────
 # Fallback speed only; the safe [min, max] band lives in drive.py (clamp_speed).
@@ -504,7 +511,7 @@ def get_local_ip():
 
 def start_stream_server():
     """Start the camera streaming server."""
-    global stream_process, stream_running, start_time
+    global stream_process, stream_running, start_time, stream_log
 
     # Only report "already running" if the process is genuinely still alive.
     # A stale flag with a dead/crashed process would otherwise make the
@@ -518,11 +525,14 @@ def start_stream_server():
         return {"status": "error", "message": f"Camera script not found: {CAMERA_SCRIPT}"}
 
     try:
+        # Log to a FILE, never a PIPE: an un-drained PIPE fills its ~64 KB buffer
+        # and blocks the stream server's prints, which froze the camera thread on
+        # a single frame. A file can't back-pressure the child.
+        stream_log = open(STREAM_LOG, "ab", buffering=0)
         stream_process = subprocess.Popen(
             [sys.executable, str(CAMERA_SCRIPT)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
+            stdout=stream_log,
+            stderr=subprocess.STDOUT,
         )
         stream_running = True
         start_time = time.time()
@@ -571,6 +581,49 @@ def get_stream_status():
             stream_running = False
 
     return {"status": "stopped", "message": "Stream server not running"}
+
+
+def start_oled():
+    """Show the OLED splash (oled_message.py) when the robot comes online.
+
+    Runs as its own process with its own RasBot. It only writes the OLED (a
+    different I2C address than the motor board), so it keeps animating while we
+    drive/scan. Best effort — never blocks server startup.
+    """
+    global oled_process, oled_log
+    if oled_process is not None and oled_process.poll() is None:
+        return {"status": "already_running"}
+    if not OLED_SCRIPT.exists():
+        return {"status": "error", "message": f"missing {OLED_SCRIPT}"}
+    try:
+        oled_log = open(OLED_LOG, "ab", buffering=0)
+        oled_process = subprocess.Popen(
+            [sys.executable, str(OLED_SCRIPT)],
+            stdout=oled_log,
+            stderr=subprocess.STDOUT,
+        )
+        return {"status": "started"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def stop_oled():
+    """Stop the OLED splash, asking it to clear the screen first (SIGINT)."""
+    global oled_process
+    if oled_process is None:
+        return
+    try:
+        oled_process.send_signal(signal.SIGINT)   # its KeyboardInterrupt clears the screen
+        try:
+            oled_process.wait(timeout=2)
+        except Exception:
+            oled_process.terminate()
+    except Exception:
+        try:
+            oled_process.kill()
+        except Exception:
+            pass
+    oled_process = None
 
 
 class ControlHandler(BaseHTTPRequestHandler):
@@ -809,12 +862,16 @@ def main():
     # Safety watchdog: halts the robot if drive commands stop arriving mid-move.
     threading.Thread(target=_watchdog, daemon=True).start()
 
+    # Robot is online -> show the OLED splash (team names / title).
+    start_oled()
+
     try:
         print("Press Ctrl+C to stop\n")
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down...")
         stop_run()
+        stop_oled()
         stop_stream_server()
         if bot is not None:
             try:
