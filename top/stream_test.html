@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stream Connection Test</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #1a1a1a;
+            color: #0f0;
+            padding: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        .panel {
+            background: #222;
+            padding: 15px;
+            border: 1px solid #444;
+            border-radius: 5px;
+        }
+        h2 {
+            margin-top: 0;
+            color: #0f0;
+            border-bottom: 1px solid #444;
+            padding-bottom: 10px;
+        }
+        .log {
+            background: #111;
+            padding: 10px;
+            border-radius: 3px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-size: 12px;
+            margin: 10px 0;
+        }
+        .log-entry {
+            margin: 3px 0;
+            padding: 2px 5px;
+        }
+        .log-ok {
+            color: #0f0;
+        }
+        .log-error {
+            color: #f00;
+        }
+        .log-info {
+            color: #0ff;
+        }
+        .stream-box {
+            background: #111;
+            padding: 10px;
+            border-radius: 3px;
+            text-align: center;
+            min-height: 300px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .stream-box img,
+        .stream-box canvas {
+            max-width: 100%;
+            max-height: 100%;
+            border: 1px solid #444;
+        }
+        button {
+            background: #0f0;
+            color: #000;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 3px;
+            cursor: pointer;
+            margin: 5px 0;
+            font-weight: bold;
+            font-family: monospace;
+        }
+        button:hover {
+            background: #0a0;
+        }
+        .status {
+            padding: 5px;
+            border-radius: 3px;
+            margin: 5px 0;
+        }
+        .status.ok {
+            background: #1a3a1a;
+            color: #0f0;
+        }
+        .status.error {
+            background: #3a1a1a;
+            color: #f00;
+        }
+        input {
+            background: #333;
+            color: #0f0;
+            border: 1px solid #444;
+            padding: 5px;
+            border-radius: 3px;
+            width: 100%;
+            margin: 5px 0;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔍 Stream Connection Test</h1>
+
+    <div class="container">
+        <!-- Config Panel -->
+        <div class="panel">
+            <h2>Configuration</h2>
+            <label>Stream URL:</label>
+            <input type="text" id="streamUrl" value="http://localhost:8000/stream.mjpg" placeholder="Stream URL">
+
+            <label>Control Server:</label>
+            <input type="text" id="controlUrl" value="http://localhost:9000" placeholder="Control URL">
+
+            <button onclick="testStreamConnection()">Test Stream URL</button>
+            <button onclick="testControlConnection()">Test Control Server</button>
+            <button onclick="testWithImg()">Test With IMG Tag</button>
+            <button onclick="clearLogs()">Clear Logs</button>
+
+            <div id="statusInfo"></div>
+        </div>
+
+        <!-- Logs -->
+        <div class="panel">
+            <h2>Connection Logs</h2>
+            <div id="logs" class="log"></div>
+        </div>
+    </div>
+
+    <!-- Stream Display -->
+    <div class="panel" style="margin-top: 20px;">
+        <h2>Live Stream</h2>
+        <div id="streamDisplay" class="stream-box">
+            <p>Stream will appear here...</p>
+        </div>
+    </div>
+
+    <script>
+        function log(message, type = 'info') {
+            const logsDiv = document.getElementById('logs');
+            const entry = document.createElement('div');
+            entry.className = `log-entry log-${type}`;
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logsDiv.appendChild(entry);
+            logsDiv.scrollTop = logsDiv.scrollHeight;
+            console.log(`[${type}] ${message}`);
+        }
+
+        function clearLogs() {
+            document.getElementById('logs').innerHTML = '';
+        }
+
+        function updateStatus(message, isOk) {
+            const statusDiv = document.getElementById('statusInfo');
+            statusDiv.className = `status ${isOk ? 'ok' : 'error'}`;
+            statusDiv.textContent = message;
+        }
+
+        async function testStreamConnection() {
+            const url = document.getElementById('streamUrl').value;
+            log(`Testing stream connection to: ${url}`, 'info');
+
+            try {
+                const response = await fetch(url, {
+                    method: 'GET',
+                    headers: {
+                        'Range': 'bytes=0-1023'
+                    }
+                });
+
+                log(`Stream server responded: ${response.status} ${response.statusText}`, 'info');
+                log(`Content-Type: ${response.headers.get('content-type')}`, 'info');
+
+                if (response.ok) {
+                    log('✓ Stream server is responding', 'ok');
+                    updateStatus('✓ Stream server responding', true);
+                } else {
+                    log(`✗ Unexpected status: ${response.status}`, 'error');
+                    updateStatus('✗ Stream server error', false);
+                }
+            } catch (error) {
+                log(`✗ Connection failed: ${error.message}`, 'error');
+                updateStatus('✗ Connection failed', false);
+            }
+        }
+
+        async function testControlConnection() {
+            const url = document.getElementById('controlUrl').value;
+            log(`Testing control server: ${url}/health`, 'info');
+
+            try {
+                const response = await fetch(`${url}/health`);
+                const data = await response.json();
+                log(`Control server response: ${JSON.stringify(data)}`, 'info');
+
+                if (response.ok) {
+                    log('✓ Control server is responding', 'ok');
+                    updateStatus('✓ Control server responding', true);
+                } else {
+                    log(`✗ Control server error: ${response.status}`, 'error');
+                    updateStatus('✗ Control server error', false);
+                }
+            } catch (error) {
+                log(`✗ Control connection failed: ${error.message}`, 'error');
+                updateStatus('✗ Control server not reachable', false);
+            }
+        }
+
+        function testWithImg() {
+            const url = document.getElementById('streamUrl').value;
+            log(`Loading stream with IMG tag: ${url}`, 'info');
+
+            const display = document.getElementById('streamDisplay');
+            display.innerHTML = '';
+
+            const img = document.createElement('img');
+            img.style.maxWidth = '100%';
+            img.style.maxHeight = '500px';
+            img.style.border = '1px solid #444';
+
+            img.onload = () => {
+                log('✓ IMG tag loaded successfully', 'ok');
+                updateStatus('✓ IMG stream working', true);
+            };
+
+            img.onerror = () => {
+                log('✗ IMG tag failed to load', 'error');
+                updateStatus('✗ IMG stream failed', false);
+            };
+
+            img.src = url;
+            display.appendChild(img);
+        }
+
+        // Auto-test on load
+        window.addEventListener('load', () => {
+            log('Stream Test Page Loaded', 'info');
+            log('URL: ' + window.location.href, 'info');
+            log('Click "Test Stream URL" or "Test Control Server" to begin', 'info');
+        });
+
+        // Test basic connectivity
+        function diagnose() {
+            log('Running diagnostic...', 'info');
+            testStreamConnection();
+            setTimeout(() => testControlConnection(), 500);
+        }
+    </script>
+</body>
+</html>
