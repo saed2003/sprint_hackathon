@@ -49,7 +49,9 @@ ACCEL_RATE     = 4.0    # max speed increase per tick (prevents speed jumps afte
 # Pivot / turn parameters
 PIVOT_FWD      = 125    # outer wheel during pivot
 PIVOT_REV      = -75    # inner wheel during pivot (negative = reverse)
-PIVOT_LATCH    = 50     # ticks to COMMIT to a turn (50 × 8ms ≈ 0.4 s)
+PIVOT_LATCH    = 70     # ticks to COMMIT to a turn (70 × 8ms ≈ 0.56 s)
+UTURN_EXTENSION = 40    # extra ticks if latch expires on 0000 — completes U-turn
+RECOVERY_LOCK  = 25     # ticks after turn/recovery to ignore opposite outer sensor
 BRAKE_PULSE    = 3      # reverse ticks before pivot to kill momentum
 BRAKE_SPEED    = -90    # both wheels this speed during brake pulse
 JUNCTION_DIR   = +1     # default junction direction: +1 RIGHT, -1 LEFT
@@ -99,11 +101,14 @@ class _Follower:
         self.actual_R   = 0.0
         self.last_error = 0.0
         self.lost_ticks = 0
-        self.latch_ticks = 0
-        self.latch_dir   = 0
-        self.brake_ticks = 0
+        self.latch_ticks     = 0
+        self.latch_dir       = 0
+        self.brake_ticks     = 0
+        self._latch_extended = False  # True once we've extended a U-turn latch
+        self._last_turn_dir  = 0      # direction of last committed turn (-1/+1)
+        self._recov_lock     = 0      # ticks left where opposite outer sensor is ignored
         self._dyn_buf    = deque([0.0] * DYN_WINDOW, maxlen=DYN_WINDOW)
-        self._dyn_speed  = float(MIN_SPEED)   # current target cruise speed
+        self._dyn_speed  = float(MIN_SPEED)
         self._tick       = 0
 
     # ── dynamic speed ─────────────────────────────────────────────
@@ -124,8 +129,10 @@ class _Follower:
 
     # ── turn management ───────────────────────────────────────────
     def _arm_turn(self, direction):
-        self.latch_dir   = direction
-        self.latch_ticks = PIVOT_LATCH
+        self.latch_dir       = direction
+        self.latch_ticks     = PIVOT_LATCH
+        self._last_turn_dir  = direction
+        self._latch_extended = False
         fwd = (self.actual_L + self.actual_R) / 2.0
         self.brake_ticks = BRAKE_PULSE if fwd > 80 else 0
 
@@ -149,23 +156,34 @@ class _Follower:
         # ── committed turn: keep going until inner sensors re-centre ──
         if self.latch_ticks > 0:
             raw = _read_pattern(L1, L2, R1, R2)
-            if count < 3 and raw is not None and abs(raw) <= E_INNER:
-                self.latch_ticks = 0         # line re-acquired → resume tracking
+            reacquired = (count < 3 and raw is not None and abs(raw) <= E_INNER)
+            if reacquired:
+                self.latch_ticks     = 0
+                self._latch_extended = False
+                self._recov_lock     = RECOVERY_LOCK   # ignore opposite outer briefly
             else:
                 self.latch_ticks -= 1
+                # U-turn extension: if latch just expired on all-off, extend once
+                # instead of dropping to LOST — completes the rotation
+                if self.latch_ticks == 0 and count == 0 and not self._latch_extended:
+                    self.latch_ticks     = UTURN_EXTENSION
+                    self._latch_extended = True
                 self._drive_turn(bot)
                 state = f"TURN({'L' if self.latch_dir < 0 else 'R'}) latch={self.latch_ticks}"
-                self._debug(bits, 0, int(self._dyn_speed), self.actual_L, self.actual_R, state)
+                self._debug(bits, float(self.latch_dir) * E_OUTER, int(self._dyn_speed),
+                            self.actual_L, self.actual_R, state)
                 return
 
-        # ── junction: 3-4 sensors ─────────────────────────────────
-        if count >= 3:
+        # ── junction: 3-4 sensors — only commit if NOT already turning ──
+        # During a turn the robot straddles the tape and often reads 3
+        # sensors — treating that as a new junction causes L/R oscillation.
+        if count >= 3 and self.latch_ticks == 0:
             d = _junction_dir(L1, L2, R1, R2, count)
             self._arm_turn(d)
             self.last_error = float(d) * E_OUTER
             self._drive_turn(bot)
             state = f"JUNC({'L' if d < 0 else 'R'})"
-            self._debug(bits, 0, int(self._dyn_speed), self.actual_L, self.actual_R, state)
+            self._debug(bits, float(d) * E_OUTER, int(self._dyn_speed), self.actual_L, self.actual_R, state)
             return
 
         raw = _read_pattern(L1, L2, R1, R2)
@@ -173,18 +191,23 @@ class _Follower:
         # ── lost line ─────────────────────────────────────────────
         if raw is None:
             self.lost_ticks += 1
-            self._update_dyn_speed(E_OUTER)   # treat as max error for speed history
+            self._update_dyn_speed(E_OUTER)
             if self.lost_ticks < DEBOUNCE:
                 self._apply(bot, self.actual_L, self.actual_R)
                 self._debug(bits, 0, int(self._dyn_speed), self.actual_L, self.actual_R, "COAST")
                 return
-            if self.last_error < 0:
+            # Use last committed turn direction for recovery — much more reliable
+            # than last_error because we KNOW which way we were rotating
+            spin_dir = self._last_turn_dir if self._last_turn_dir != 0 else (
+                -1 if self.last_error < 0 else 1
+            )
+            if spin_dir < 0:
                 self._snap(bot, -LOST_SPEED, LOST_SPEED)
-            elif self.last_error > 0:
-                self._snap(bot, LOST_SPEED, -LOST_SPEED)
             else:
-                self._snap(bot, -LOST_SPEED, LOST_SPEED)
-            self._debug(bits, 0, int(self._dyn_speed), self.actual_L, self.actual_R, "LOST")
+                self._snap(bot, LOST_SPEED, -LOST_SPEED)
+            self._recov_lock = RECOVERY_LOCK
+            self._debug(bits, float(spin_dir) * E_OUTER, int(self._dyn_speed),
+                        self.actual_L, self.actual_R, f"LOST({'L' if spin_dir<0 else 'R'})")
             return
 
         self.lost_ticks = 0
@@ -197,14 +220,27 @@ class _Follower:
 
         # ── sharp corner → arm latch ──────────────────────────────
         if abs(error) >= E_OUTER:
-            self._arm_turn(1 if error > 0 else -1)
-            self._update_dyn_speed(E_OUTER)
-            self._drive_turn(bot)
-            state = f"CORNER({'R' if error > 0 else 'L'})"
-            self._debug(bits, error, int(self._dyn_speed), self.actual_L, self.actual_R, state)
-            return
+            turn_dir = 1 if error > 0 else -1
+            # Recovery lock: if we just completed a turn the OTHER way and
+            # an outer sensor fires on the opposite side, it's likely the
+            # robot's body still crossing the tape — don't re-pivot.
+            # Treat it as a normal curve correction instead.
+            if self._recov_lock > 0 and turn_dir != self._last_turn_dir:
+                self._recov_lock -= 1
+                error = float(turn_dir) * E_BOTH   # downgrade to curve
+            else:
+                if self._recov_lock > 0:
+                    self._recov_lock -= 1
+                self._arm_turn(turn_dir)
+                self._update_dyn_speed(E_OUTER)
+                self._drive_turn(bot)
+                state = f"CORNER({'R' if turn_dir > 0 else 'L'})"
+                self._debug(bits, error, int(self._dyn_speed), self.actual_L, self.actual_R, state)
+                return
 
         # ── normal tracking with dynamic speed ────────────────────
+        if self._recov_lock > 0:
+            self._recov_lock -= 1
         cruise = self._update_dyn_speed(error)
         speed  = max(MIN_SPEED, cruise - abs(correction) * BRAKE_K)
 
