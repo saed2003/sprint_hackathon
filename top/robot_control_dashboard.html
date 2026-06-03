@@ -625,7 +625,6 @@
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/jsmpeg@0.2.0/jsmpeg.min.js"></script>
     <script>
         // Configuration state
         // Default the control/stream servers to the SAME host the dashboard was
@@ -768,16 +767,6 @@
             disconnectBtn.classList.add('btn-disabled');
             updateStreamStatus('🔄 Stopping stream...', '#ff9800', false);
 
-            // Stop the JSMpeg player if it exists
-            if (window.currentPlayer) {
-                try {
-                    window.currentPlayer.stop();
-                } catch (e) {
-                    console.log('Error stopping player:', e);
-                }
-                window.currentPlayer = null;
-            }
-
             const controlUrl = `http://${config.controlServer}/api/stream/stop`;
             fetch(controlUrl, { method: 'POST' })
                 .then(r => r.json())
@@ -813,58 +802,22 @@
             const streamContainer = document.getElementById('streamContainer');
             state.streamUrl = streamUrl;
 
-            console.log('Initializing stream with URL:', streamUrl);
-
-            // Try jsmpeg first (works in Chrome); fallback to simple img tag (Safari)
-            if (typeof JSMpeg !== 'undefined') {
-                console.log('JSMpeg library available, using canvas player');
-                streamContainer.innerHTML = '<canvas id="mjpegCanvas" style="width: 100%; height: 100%; display: block;"></canvas>';
-                const canvas = document.getElementById('mjpegCanvas');
-
-                try {
-                    const player = new JSMpeg.Player(streamUrl, {
-                        canvas: canvas,
-                        autoplay: true,
-                        onplay: () => {
-                            console.log('Stream started playing');
-                            updateStreamStatus('✓ Stream active', '#4caf50', true);
-                        },
-                        onerror: (error) => {
-                            console.error('JSMpeg error:', error);
-                            console.log('Falling back to image tag');
-                            initializeStreamFallback(streamUrl);
-                        }
-                    });
-
-                    window.currentPlayer = player;
-                    console.log('JSMpeg player created');
-                } catch (e) {
-                    console.error('JSMpeg initialization error:', e);
-                    console.log('Falling back to image tag');
-                    initializeStreamFallback(streamUrl);
-                }
-            } else {
-                console.log('JSMpeg not available, using image tag fallback');
-                initializeStreamFallback(streamUrl);
-            }
-        }
-
-        function initializeStreamFallback(streamUrl) {
-            const streamContainer = document.getElementById('streamContainer');
+            console.log('Loading stream from:', streamUrl);
             streamContainer.innerHTML = '';
+
             const imgElement = document.createElement('img');
-            imgElement.src = streamUrl + '?t=' + Date.now();
+            imgElement.src = streamUrl;
             imgElement.style.width = '100%';
             imgElement.style.height = '100%';
             imgElement.style.objectFit = 'contain';
 
             imgElement.onerror = () => {
-                console.error('Image stream failed to load');
+                console.error('Stream failed:', streamUrl);
                 updateStreamStatus('✗ Stream connection failed', '#f44336', false);
             };
 
             imgElement.onload = () => {
-                console.log('Stream loaded successfully');
+                console.log('Stream active');
                 updateStreamStatus('✓ Stream active', '#4caf50', true);
             };
 

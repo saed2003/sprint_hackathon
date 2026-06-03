@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RasotV2 Robot Control Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1e1e1e;
+            color: #e0e0e0;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .container {
+            display: flex;
+            height: 100vh;
+            gap: 12px;
+            padding: 10px;
+        }
+
+        .left-panel {
+            flex: 0 0 420px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            overflow: hidden;
+        }
+
+        .right-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .stream-container {
+            flex: 1;
+            background: #0a0a0a;
+            border-radius: 8px;
+            overflow: hidden;
+            border: 2px solid #444;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .stream-container img,
+        .stream-container video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        .stream-status {
+            padding: 10px;
+            background: #2a2a2a;
+            border-radius: 4px;
+            font-size: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .stream-status-text {
+            flex: 1;
+            min-width: 150px;
+        }
+
+        .stream-controls {
+            display: flex;
+            gap: 8px;
+        }
+
+        .btn {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 11px;
+            font-weight: bold;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+
+        .btn:hover:not(.btn-disabled) {
+            opacity: 0.8;
+            transform: translateY(-1px);
+        }
+
+        .btn:active:not(.btn-disabled) {
+            transform: translateY(0);
+        }
+
+        .btn-connect {
+            background: #4caf50;
+            color: white;
+        }
+
+        .btn-disconnect {
+            background: #f44336;
+            color: white;
+        }
+
+        .btn-config {
+            background: #2196f3;
+            color: white;
+        }
+
+        .btn-disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .keyboard-section {
+            background: #2a2a2a;
+            padding: 10px 12px;
+            border-radius: 8px;
+            border: 1px solid #444;
+        }
+
+        .section-title {
+            font-size: 13px;
+            font-weight: bold;
+            margin-bottom: 8px;
+            color: #64b5f6;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .keyboard-layout {
+            display: grid;
+            gap: 4px;
+            margin-bottom: 0;
+        }
+
+        .key-row {
+            display: flex;
+            gap: 4px;
+        }
+
+        .key {
+            flex: 1;
+            padding: 5px;
+            background: #3a3a3a;
+            border: 1px solid #555;
+            border-radius: 4px;
+            text-align: center;
+            font-size: 11px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.1s ease;
+            user-select: none;
+            min-height: 30px;
+            line-height: 1.2;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .key:hover {
+            background: #4a4a4a;
+            border-color: #666;
+        }
+
+        .key.movement {
+            background: #2196f3;
+            border-color: #1976d2;
+            color: white;
+        }
+
+        .spacer {
+            flex: 2;
+        }
+
+        #configPanel {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            background: #2a2a2a;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #444;
+            z-index: 1000;
+            min-width: 280px;
+            max-width: 350px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        #configPanel.hidden {
+            display: none;
+        }
+
+        .config-group {
+            font-size: 12px;
+            margin-bottom: 12px;
+        }
+
+        .config-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: #64b5f6;
+            font-weight: bold;
+        }
+
+        .config-group input {
+            width: 100%;
+            padding: 6px;
+            background: #3a3a3a;
+            color: #fff;
+            border: 1px solid #555;
+            border-radius: 4px;
+            font-size: 11px;
+        }
+
+        .config-group input:focus {
+            outline: none;
+            border-color: #64b5f6;
+        }
+
+        .config-buttons {
+            display: flex;
+            gap: 8px;
+        }
+
+        .config-buttons .btn {
+            flex: 1;
+            padding: 8px;
+            font-size: 11px;
+        }
+
+        .status-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 5px;
+            vertical-align: middle;
+        }
+
+        .status-dot.running {
+            background: #4caf50;
+        }
+
+        .status-dot.stopped {
+            background: #f44336;
+        }
+
+        .status-dot.connecting {
+            background: #ff9800;
+            animation: spin 0.6s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <!-- Config Panel -->
+    <div id="configPanel" class="hidden">
+        <div style="margin-bottom: 15px;">
+            <h3 style="color: #64b5f6; font-size: 14px; margin-bottom: 10px;">⚙ Server Configuration</h3>
+        </div>
+
+        <div class="config-group">
+            <label>Stream Server (IP:Port)</label>
+            <input type="text" id="streamUrlInput" placeholder="e.g., sprint.local:8000 or localhost:8000">
+        </div>
+
+        <div class="config-buttons">
+            <button class="btn btn-connect" onclick="saveConfig()">Save</button>
+            <button class="btn btn-config" onclick="toggleConfig()">Close</button>
+        </div>
+    </div>
+
+    <div class="container">
+        <!-- LEFT PANEL -->
+        <div class="left-panel">
+            <div class="keyboard-section">
+                <div class="section-title">Stream Configuration</div>
+                <p style="font-size: 11px; color: #aaa; margin-bottom: 10px;">
+                    Default: <code style="background: #111; padding: 2px 4px;">sprint.local:8000</code>
+                </p>
+                <button class="btn btn-config" onclick="toggleConfig()" style="width: 100%;">⚙ Configure Server</button>
+                <div id="connectionStatus" style="margin-top: 10px; font-size: 11px; color: #aaa;"></div>
+            </div>
+
+            <div class="keyboard-section">
+                <div class="section-title">Stream Status</div>
+                <div id="debugInfo" style="font-size: 11px; color: #aaa; margin-top: 5px; font-family: monospace; max-height: 200px; overflow-y: auto; background: #111; padding: 5px; border-radius: 3px;"></div>
+            </div>
+        </div>
+
+        <!-- RIGHT PANEL -->
+        <div class="right-panel">
+            <div class="stream-container" id="streamContainer">
+                <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 300'%3E%3Crect fill='%23333' width='400' height='300'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' dy='.3em' fill='%23888' font-size='18'%3ECamera Stream%3C/text%3E%3Ctext x='50%25' y='55%25' text-anchor='middle' dy='.3em' fill='%23666' font-size='12'%3E(Click Connect to start)%3C/text%3E%3C/svg%3E" alt="Camera Stream">
+            </div>
+            <div class="stream-status">
+                <div class="stream-status-text">
+                    <span class="status-dot stopped"></span><span id="streamStatus">Status: Disconnected</span>
+                </div>
+                <div class="stream-controls">
+                    <button class="btn btn-connect" onclick="connectStream()" id="connectBtn">Connect</button>
+                    <button class="btn btn-disconnect btn-disabled" onclick="disconnectStream()" id="disconnectBtn" disabled>Disconnect</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const config = {
+            streamServer: localStorage.getItem('streamServer') || 'sprint.local:8000',
+            streamConnected: false
+        };
+
+        const statusDot = document.querySelector('.status-dot');
+        const streamStatus = document.getElementById('streamStatus');
+        const streamUrlInput = document.getElementById('streamUrlInput');
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const configPanel = document.getElementById('configPanel');
+
+        // Load config
+        window.addEventListener('load', () => {
+            streamUrlInput.value = config.streamServer;
+            updateDebug('Page loaded', 'info');
+            updateDebug(`Stream Server: ${config.streamServer}`, 'info');
+        });
+
+        function toggleConfig() {
+            configPanel.classList.toggle('hidden');
+        }
+
+        function saveConfig() {
+            const url = streamUrlInput.value.trim();
+            if (!url) {
+                updateDebug('Error: URL cannot be empty', 'error');
+                return;
+            }
+            config.streamServer = url;
+            localStorage.setItem('streamServer', config.streamServer);
+            updateDebug(`Config saved: ${config.streamServer}`, 'ok');
+            toggleConfig();
+        }
+
+        function updateDebug(msg, type = 'info') {
+            const debugDiv = document.getElementById('debugInfo');
+            const entry = document.createElement('div');
+            entry.style.color = type === 'error' ? '#f00' : type === 'ok' ? '#0f0' : '#0ff';
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            debugDiv.appendChild(entry);
+            debugDiv.scrollTop = debugDiv.scrollHeight;
+            console.log(`[${type}] ${msg}`);
+        }
+
+        function updateStreamStatus(text, color, connected) {
+            streamStatus.textContent = text;
+            streamStatus.style.color = color;
+            statusDot.className = 'status-dot';
+            if (connected) {
+                statusDot.classList.add('running');
+            } else if (text.includes('Starting') || text.includes('Stopping')) {
+                statusDot.classList.add('connecting');
+            } else {
+                statusDot.classList.add('stopped');
+            }
+        }
+
+        function connectStream() {
+            updateDebug('Attempting to connect...', 'info');
+            connectBtn.disabled = true;
+            connectBtn.classList.add('btn-disabled');
+            updateStreamStatus('🔄 Connecting...', '#ff9800', false);
+
+            const streamUrl = `http://${config.streamServer}/stream.mjpg`;
+            updateDebug(`URL: ${streamUrl}`, 'info');
+
+            const container = document.getElementById('streamContainer');
+            container.innerHTML = '';
+
+            const img = document.createElement('img');
+            img.style.width = '100%';
+            img.style.height = '100%';
+            img.style.objectFit = 'contain';
+
+            img.onload = () => {
+                updateDebug('Stream loaded successfully!', 'ok');
+                updateStreamStatus('✓ Stream active', '#4caf50', true);
+                config.streamConnected = true;
+                connectBtn.disabled = true;
+                connectBtn.classList.add('btn-disabled');
+                disconnectBtn.disabled = false;
+                disconnectBtn.classList.remove('btn-disabled');
+            };
+
+            img.onerror = () => {
+                updateDebug('Stream failed to load', 'error');
+                updateDebug(`Possible issues:`, 'error');
+                updateDebug(`  1. Wrong IP/port (check "sprint.local" vs actual IP)`, 'error');
+                updateDebug(`  2. Stream server not running on port 8000`, 'error');
+                updateDebug(`  3. Network connectivity issue`, 'error');
+                updateStreamStatus('✗ Stream connection failed', '#f44336', false);
+                connectBtn.disabled = false;
+                connectBtn.classList.remove('btn-disabled');
+            };
+
+            img.src = streamUrl;
+            container.appendChild(img);
+        }
+
+        function disconnectStream() {
+            disconnectBtn.disabled = true;
+            disconnectBtn.classList.add('btn-disabled');
+            updateStreamStatus('Disconnected', '#f44336', false);
+
+            config.streamConnected = false;
+            connectBtn.disabled = false;
+            connectBtn.classList.remove('btn-disabled');
+
+            document.getElementById('streamContainer').innerHTML =
+                '<img src="data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 400 300\'%3E%3Crect fill=\'%23333\' width=\'400\' height=\'300\'/%3E%3Ctext x=\'50%25\' y=\'50%25\' text-anchor=\'middle\' dy=\'.3em\' fill=\'%23888\' font-size=\'18\'%3ECamera Stream%3C/text%3E%3Ctext x=\'50%25\' y=\'55%25\' text-anchor=\'middle\' dy=\'.3em\' fill=\'%23666\' font-size=\'12\'%3E(Click Connect to start)%3C/text%3E%3C/svg%3E" alt="Camera Stream">';
+
+            updateDebug('Stream disconnected', 'info');
+        }
+    </script>
+</body>
+</html>
