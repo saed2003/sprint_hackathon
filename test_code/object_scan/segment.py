@@ -111,6 +111,21 @@ def remove_dominant_plane(pcd, distance_threshold=0.006, ransac_n=3,
     return pcd.select_by_index(inliers, invert=True)
 
 
+def keep_largest_cluster(pcd, eps=0.012, min_points=15):
+    """Keep only the biggest DBSCAN cluster — the object — and drop everything else
+    (floor remnants, background patches, stray flyers). This is the robust way to
+    isolate a SMALL object that may be off-centre in the frame: after the floor plane
+    is removed, the object is the largest compact blob left. Much better than cropping
+    around a centroid, which gets dragged off by background points."""
+    if len(pcd.points) < min_points:
+        return pcd
+    labels = np.array(pcd.cluster_dbscan(eps=eps, min_points=min_points))
+    if labels.max() < 0:                              # no cluster found -> leave as-is
+        return pcd
+    biggest = np.bincount(labels[labels >= 0]).argmax()
+    return pcd.select_by_index(np.where(labels == biggest)[0])
+
+
 def crop_around_centroid(pcd, half):
     """Keep only points within `half` metres (per axis) of the cloud's robust centre.
 
@@ -132,12 +147,17 @@ def estimate_normals(pcd, radius=0.01, max_nn=30):
 
 
 def segment_object(folder, zmin=ZMIN_DEFAULT, zmax=ZMAX_DEFAULT, remove_plane=True,
-                   crop=None, voxel=0.003, sor=True, normals=True):
+                   crop=None, voxel=0.003, sor=True, normals=True, cluster=True):
     """Full per-view segmentation: capture folder -> clean object point cloud.
 
-    voxel: downsample resolution (m); 0.002-0.004 keeps detail for small objects.
-    crop : half-size (m) of a centroid box, or None to skip.
-    sor  : statistical outlier removal (drops passive-stereo flyers).
+    Order: depth gate -> voxel -> remove floor plane -> KEEP LARGEST CLUSTER (the
+    object) -> optional centroid crop -> outlier removal -> normals.
+
+    voxel  : downsample resolution (m); 0.0015-0.004 keeps detail for small objects.
+    cluster: keep only the biggest blob (isolates a small/off-centre object from
+             background). Turn off for objects that fill the frame.
+    crop   : half-size (m) of a centroid box, or None to skip.
+    sor    : statistical outlier removal (drops passive-stereo flyers).
     """
     pts, cols = back_project(folder, zmin, zmax)
     pcd = to_o3d(pts, cols)
@@ -145,6 +165,8 @@ def segment_object(folder, zmin=ZMIN_DEFAULT, zmax=ZMAX_DEFAULT, remove_plane=Tr
         pcd = pcd.voxel_down_sample(voxel)
     if remove_plane:
         pcd = remove_dominant_plane(pcd)
+    if cluster:
+        pcd = keep_largest_cluster(pcd, eps=max(0.01, (voxel or 0.003) * 8))
     pcd = crop_around_centroid(pcd, crop)
     if sor and len(pcd.points) > 20:
         pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
