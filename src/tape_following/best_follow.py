@@ -1,10 +1,30 @@
 """
-best_follow.py — Combined best-of-3 line follower
-==================================================
-Takes the best from each version:
-  - p_follow.py    : weighted error → smooth proportional turning
-  - simple_follow.py: last_seen memory for lost-line recovery
-  - line_follow.py  : motor smoothing (no jerk) + debounce for lost line
+best_follow.py — Adaptive PD line follower (best combined version)
+==================================================================
+Combines the strongest idea from every follower in this folder:
+
+  p_follow.py      → weighted proportional error
+  pd_follow.py     → derivative term that kills oscillation
+  line_follow.py   → predictive braking into corners + hard pivot on sharp turns
+  simple_follow.py → memory-based lost-line recovery
+  best_follow.py   → EMA motor smoothing for jerk-free drive
+
+Design goals
+  • FAST on straights (high cruise speed)
+  • NEVER miss a turn (auto-brake into corners + hard pivot on outer-only)
+  • NO wobble on straights (PD damping + motor smoothing)
+  • SMOOTH drive (exponential motor interpolation)
+
+Sensor board: Yahboom YB-MVX01, 70mm wide.
+  L1 = outer-left   L2 = inner-left   R1 = inner-right   R2 = outer-right
+  inner pair (L2/R1) ~12mm apart — straddle the tape when centred
+  outer pair (L1/R2) ~55mm apart — only fire on a real corner / big drift
+  read_line_sensors() returns (L1, L2, R1, R2); True = sees BLACK tape
+
+Run standalone:
+  python3 src/tape_following/best_follow.py
+From drive.py F-key:
+  best_follow.run(bot, stop_event=evt)
 """
 
 import time
@@ -14,97 +34,134 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from setup_and_api.api import RasBot
 
-# ═══════════════════════════════════════════════════════
-#  TUNING — only change these
-#  Sensor board: 70mm wide, inner pair ~12mm apart (P2/P3),
-#  outer pair ~55mm apart (P1/P4).
-# ═══════════════════════════════════════════════════════
-BASE_SPEED    = 85     # cruise speed on a straight
-Kp            = 28     # proportional gain
-Kd            = 10     # derivative gain — brakes rapid error changes (kills oscillation)
-SMOOTH        = 0.22   # motor smoothing: 0.1=silky, 0.5=snappy
-LOST_SPEED    = 80     # sweep speed when searching for lost line
+# ═══════════════════════════════════════════════════════════════════
+#  TUNING  — only change values in this block
+# ═══════════════════════════════════════════════════════════════════
+CRUISE_SPEED  = 130    # straight-line speed (fast). raise for more speed
+MIN_SPEED     = 70     # slowest allowed mid-turn (brake floor)
+Kp            = 22     # proportional gain — sharper turns if raised
+Kd            = 14     # derivative gain — damps wobble/overshoot
+BRAKE_K       = 0.45   # auto-brake strength: speed drops as correction grows
+SMOOTH        = 0.30   # motor EMA: 0.15=silky, 0.30=balanced, 0.5=snappy
+PIVOT_FWD     = 115    # outer-wheel speed during a hard corner pivot
+PIVOT_REV     = -55    # inner-wheel speed during a hard corner pivot (spins it round)
+LOST_SPEED    = 95     # in-place spin speed when hunting a lost line
 DEBOUNCE      = 2      # consecutive all-off reads before declaring "lost"
-LOOP_DELAY    = 0.01   # 100 Hz — keep fast so derivative math is accurate
-# ═══════════════════════════════════════════════════════
+LOOP_DELAY    = 0.008  # ~125 Hz — fast loop keeps the derivative accurate
+# ═══════════════════════════════════════════════════════════════════
+
+# error magnitudes (sign = side: negative = tape LEFT, positive = tape RIGHT)
+E_INNER = 1.0    # one inner sensor only      — tiny drift
+E_BOTH  = 2.0    # inner + outer, same side   — leaning into a curve
+E_OUTER = 4.0    # outer sensor ONLY          — sharp corner, trigger pivot
+E_LOST  = 6.0    # all sensors off            — memory sweep
 
 
 def clamp(v, lo=-255, hi=255):
     return max(lo, min(hi, int(v)))
 
 
+def _read_pattern(L1, L2, R1, R2):
+    """Map the 4 sensor bits to a signed error, or None if all-off.
+
+    Negative error = tape is LEFT  → steer left.
+    Positive error = tape is RIGHT → steer right.
+    """
+    if L2 and R1:                                   # 0110 centred
+        return 0.0
+    if L1 and not L2 and not R1 and not R2:         # 1000 sharp LEFT corner
+        return -E_OUTER
+    if L1 and L2 and not R1 and not R2:             # 1100 leaning left
+        return -E_BOTH
+    if L2 and not L1 and not R1 and not R2:         # 0100 slight left
+        return -E_INNER
+    if R2 and not R1 and not L1 and not L2:         # 0001 sharp RIGHT corner
+        return E_OUTER
+    if R1 and R2 and not L1 and not L2:             # 0011 leaning right
+        return E_BOTH
+    if R1 and not R2 and not L1 and not L2:         # 0010 slight right
+        return E_INNER
+    if not (L1 or L2 or R1 or R2):                  # 0000 lost
+        return None
+    # any odd pattern (junction 1111, gaps like 1001/1010) → treat as centred
+    return 0.0
+
+
+class _Follower:
+    """Holds the PD + smoothing state so main() and run() share one code path."""
+
+    def __init__(self):
+        self.actual_L = 0.0      # smoothed motor outputs
+        self.actual_R = 0.0
+        self.last_error = 0.0    # for derivative + lost-line memory
+        self.lost_ticks = 0      # debounce counter for all-off
+
+    def step(self, bot):
+        L1, L2, R1, R2 = bot.read_line_sensors()
+        raw = _read_pattern(L1, L2, R1, R2)
+
+        # ── lost-line handling with debounce ───────────────────────────
+        if raw is None:
+            self.lost_ticks += 1
+            if self.lost_ticks < DEBOUNCE:
+                # brief dropout — coast on the last motor command
+                self._apply(bot, self.actual_L, self.actual_R)
+                return
+            # truly lost → spin toward the side we last saw tape
+            if self.last_error < 0:
+                self._snap(bot, -LOST_SPEED, LOST_SPEED)
+            elif self.last_error > 0:
+                self._snap(bot, LOST_SPEED, -LOST_SPEED)
+            else:
+                self._snap(bot, -LOST_SPEED, LOST_SPEED)   # default hunt left
+            return
+
+        self.lost_ticks = 0
+        error = raw
+
+        # ── PD correction ──────────────────────────────────────────────
+        derivative = error - self.last_error
+        correction = Kp * error + Kd * derivative
+        self.last_error = error                  # remember real readings only
+
+        # ── HARD PIVOT on a sharp corner (outer sensor only) ───────────
+        # Snap (no smoothing) so the turn engages instantly and never misses.
+        if abs(error) >= E_OUTER:
+            if error < 0:
+                self._snap(bot, PIVOT_REV, PIVOT_FWD)    # pivot LEFT
+            else:
+                self._snap(bot, PIVOT_FWD, PIVOT_REV)    # pivot RIGHT
+            return
+
+        # ── normal tracking with predictive braking ───────────────────
+        # The bigger the correction, the more we slow down → no overshoot,
+        # full speed returns automatically on the straight.
+        speed = max(MIN_SPEED, CRUISE_SPEED - abs(correction) * BRAKE_K)
+        target_L = speed + correction
+        target_R = speed - correction
+
+        # EMA smoothing → no jerk
+        self.actual_L += (target_L - self.actual_L) * SMOOTH
+        self.actual_R += (target_R - self.actual_R) * SMOOTH
+        self._apply(bot, self.actual_L, self.actual_R)
+
+    def _apply(self, bot, l, r):
+        bot._apply_motors(clamp(l), clamp(l), clamp(r), clamp(r))
+
+    def _snap(self, bot, l, r):
+        """Instant motor set (bypasses smoothing) for pivots / sweeps."""
+        self.actual_L, self.actual_R = float(l), float(r)
+        self._apply(bot, l, r)
+
+
 def main():
-    # smoothed motor state (from line_follow.py)
-    actual_L = 0.0
-    actual_R = 0.0
-
-    last_error   = 0.0   # memory for lost-line recovery (from simple_follow.py)
-    lost_ticks   = 0     # debounce counter (from line_follow.py)
-
+    follower = _Follower()
     with RasBot() as bot:
-        print("best_follow started. Ctrl+C to stop.")
+        print("best_follow (adaptive PD) started. Ctrl+C to stop.")
         try:
             while True:
-                L1, L2, R1, R2 = bot.read_line_sensors()
-                # True = sensor sees BLACK tape
-                # L1=outer-left  L2=inner-left  R1=inner-right  R2=outer-right
-
-                # ── 1. WEIGHTED ERROR (from p_follow.py) ──────────────────
-                # error < 0 → tape is LEFT  → steer left
-                # error > 0 → tape is RIGHT → steer right
-                if L2 and R1:
-                    error = 0.0      # perfectly centered (both inner on tape)
-                    lost_ticks = 0
-                elif L2 and not R1 and not R2:
-                    error = -1.0     # slight left — inner-left on, inner-right off
-                    lost_ticks = 0
-                elif L1 and L2:
-                    error = -1.8     # medium left — both left sensors on
-                    lost_ticks = 0
-                elif L1 and not L2:
-                    error = -2.5     # hard left — outer-left only (corner)
-                    lost_ticks = 0
-                elif R1 and not L1 and not L2:
-                    error = 1.0      # slight right — inner-right on, inner-left off
-                    lost_ticks = 0
-                elif R1 and R2:
-                    error = 1.8      # medium right — both right sensors on
-                    lost_ticks = 0
-                elif R2 and not R1:
-                    error = 2.5      # hard right — outer-right only (corner)
-                    lost_ticks = 0
-                else:
-                    # ── 2. DEBOUNCE lost line (from line_follow.py) ────────
-                    lost_ticks += 1
-                    if lost_ticks < DEBOUNCE:
-                        error = last_error   # hold last error briefly
-                    else:
-                        # ── 3. MEMORY SWEEP (from simple_follow.py) ───────
-                        error = -3.0 if last_error < 0 else (3.0 if last_error > 0 else 0.0)
-
-                # ── 4. PD CORRECTION ─────────────────────────────────────
-                derivative = error - last_error
-                correction = Kp * error + Kd * derivative
-
-                # save last real error for recovery + next derivative
-                if abs(error) < 3:
-                    last_error = error
-                target_L   = BASE_SPEED + correction
-                target_R   = BASE_SPEED - correction
-
-                # override with sweep speed when fully lost
-                if abs(error) >= 3:
-                    target_L = -LOST_SPEED if error < 0 else LOST_SPEED
-                    target_R =  LOST_SPEED if error < 0 else -LOST_SPEED
-
-                # ── 5. MOTOR SMOOTHING (from line_follow.py) ──────────────
-                actual_L += (target_L - actual_L) * SMOOTH
-                actual_R += (target_R - actual_R) * SMOOTH
-
-                bot._apply_motors(clamp(actual_L), clamp(actual_L),
-                                  clamp(actual_R), clamp(actual_R))
+                follower.step(bot)
                 time.sleep(LOOP_DELAY)
-
         except KeyboardInterrupt:
             print("\nStopping...")
         finally:
@@ -114,53 +171,10 @@ def main():
 
 def run(bot, stop_event=None, **kwargs):
     """Entry point called by drive.py F-key (mirrors line_follow.run API)."""
-    actual_L = 0.0
-    actual_R = 0.0
-    last_error = 0.0
-    lost_ticks = 0
-
+    follower = _Follower()
     try:
         while stop_event is None or not stop_event.is_set():
-            L1, L2, R1, R2 = bot.read_line_sensors()
-
-            if L2 and R1:
-                error = 0.0;      lost_ticks = 0
-            elif L2 and not R1 and not R2:
-                error = -1.0;     lost_ticks = 0
-            elif L1 and L2:
-                error = -1.8;     lost_ticks = 0
-            elif L1 and not L2:
-                error = -2.5;     lost_ticks = 0
-            elif R1 and not L1 and not L2:
-                error = 1.0;      lost_ticks = 0
-            elif R1 and R2:
-                error = 1.8;      lost_ticks = 0
-            elif R2 and not R1:
-                error = 2.5;      lost_ticks = 0
-            else:
-                lost_ticks += 1
-                if lost_ticks < DEBOUNCE:
-                    error = last_error
-                else:
-                    error = -3.0 if last_error < 0 else (3.0 if last_error > 0 else 0.0)
-
-            derivative = error - last_error
-            correction = Kp * error + Kd * derivative
-
-            if abs(error) < 3:
-                last_error = error
-            target_L   = BASE_SPEED + correction
-            target_R   = BASE_SPEED - correction
-
-            if abs(error) >= 3:
-                target_L = -LOST_SPEED if error < 0 else LOST_SPEED
-                target_R =  LOST_SPEED if error < 0 else -LOST_SPEED
-
-            actual_L += (target_L - actual_L) * SMOOTH
-            actual_R += (target_R - actual_R) * SMOOTH
-
-            bot._apply_motors(clamp(actual_L), clamp(actual_L),
-                              clamp(actual_R), clamp(actual_R))
+            follower.step(bot)
             time.sleep(LOOP_DELAY)
     finally:
         bot.stop()
