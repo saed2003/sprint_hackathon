@@ -36,9 +36,8 @@ stream_running = False
 start_time = None
 
 # ── Robot driving state ────────────────────────────────────────
+# Fallback speed only; the safe [min, max] band lives in drive.py (clamp_speed).
 DRIVE_SPEED_DEFAULT = 120
-DRIVE_SPEED_MIN = 40
-DRIVE_SPEED_MAX = 255
 # Safety: auto-stop if no drive command arrives within this window while moving
 # (covers a browser tab closing or the network dropping mid-drive).
 DRIVE_WATCHDOG_S = 0.6
@@ -57,9 +56,8 @@ run_mode = 'manual'
 last_cmd = None            # last motion command tuple sent to the bot
 last_cmd_time = 0.0        # wall-clock of the last drive command (for the watchdog)
 
-# Camera pan/tilt servo state (mirrors wasd/drive.py's arrow-key behavior)
-PAN_STEP = 10
-TILT_STEP = 10
+# Camera pan/tilt servo state. The step size + clamp live in drive.py
+# (nudge_servo); we just hold the current angle so nudges accumulate.
 pan_angle = 90             # 0-180, default centered
 tilt_angle = 25            # 0-100, default
 
@@ -113,10 +111,9 @@ def drive(keys, speed):
     if dmod is None:
         return {"status": "error", "message": f"drive.py unavailable: {derr}"}
     try:
-        speed = int(speed)
+        speed = dmod.clamp_speed(speed)     # drive.py owns the speed band
     except (TypeError, ValueError):
         speed = DRIVE_SPEED_DEFAULT
-    speed = max(DRIVE_SPEED_MIN, min(DRIVE_SPEED_MAX, speed))
     # drive.py's OWN functions decide and apply the motion (no duplicate logic here).
     pressed = _keys_to_pressed(keys)
     cmd = dmod.desired_command(pressed, speed)
@@ -134,19 +131,21 @@ def servo(axis, delta):
     b, err = get_bot()
     if b is None:
         return {"status": "error", "message": f"Robot unavailable: {err}"}
+    dmod, derr = get_drive()
+    if dmod is None:
+        return {"status": "error", "message": f"drive.py unavailable: {derr}"}
     try:
         delta = int(delta)
     except (TypeError, ValueError):
         return {"status": "error", "message": "delta must be a number"}
     with robot_lock:
         try:
+            # drive.py owns the clamp + set_pan/set_tilt; we only track the value.
             if axis == "pan":
-                pan_angle = max(0, min(180, pan_angle + delta))
-                b.set_pan(pan_angle)
+                pan_angle = dmod.nudge_servo(b, "pan", pan_angle, delta)
                 val = pan_angle
             elif axis == "tilt":
-                tilt_angle = max(0, min(100, tilt_angle + delta))
-                b.set_tilt(tilt_angle)
+                tilt_angle = dmod.nudge_servo(b, "tilt", tilt_angle, delta)
                 val = tilt_angle
             else:
                 return {"status": "error", "message": f"unknown axis '{axis}'"}
@@ -240,14 +239,19 @@ def _run_capture(kind):
     """Background worker for a capture/build; updates capture_status as it goes."""
     global capture_busy, capture_status, last_cmd, last_session, last_ply
     try:
+        # All three actions run through drive.py's capture helpers (one workflow).
+        dmod, derr = get_drive()
+        if dmod is None:
+            capture_status = f"error: drive.py unavailable ({derr})"
+            return
+
         # Build (T) is pure compute — no robot, no camera.
         if kind == "build":
-            from pointcloud import scan360
             if not last_session or not os.path.isdir(last_session):
                 capture_status = "error: no scan yet — run a 360 scan (R) first"
                 return
             capture_status = "building point cloud (this can take a while)..."
-            ply = scan360.build_from_session(last_session, log=lambda *a, **k: None)
+            ply = dmod.build_cloud(last_session, log=lambda *a, **k: None)
             last_ply = ply
             capture_status = f"done: built {os.path.basename(ply)} — ready to download"
             return
@@ -267,15 +271,14 @@ def _run_capture(kind):
         except Exception:
             pass
         if kind == "scan360":
-            from pointcloud import scan360
             capture_status = "360 scan: rotating + capturing..."
-            session = scan360.run_scan(b, c, out_root=CAPTURES_ROOT, log=lambda *a, **k: None)
+            session = dmod.scan360_capture(b, c, out_root=CAPTURES_ROOT, log=lambda *a, **k: None)
             last_session = session
             last_ply = None               # a new scan invalidates the old build
             capture_status = f"done: {os.path.basename(session)} (scan) — press Build (T)"
         else:  # single
             capture_status = "capturing single frame..."
-            folder = c.save(out_root=CAPTURES_ROOT)
+            folder = dmod.single_capture(c, out_root=CAPTURES_ROOT)
             capture_status = ("done: " + os.path.basename(folder)) if folder else "frame dropped"
         try:
             b.set_all_leds_color(Color.GREEN)

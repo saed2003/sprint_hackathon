@@ -74,6 +74,59 @@ def command_label(cmd):
     return 'stopped'
 
 
+# ── speed + camera servo (shared by the teleop HUD and the web control server) ──
+# One definition per control action lives here so both drivers (this pygame
+# teleop and control_server.py over HTTP) behave identically.
+
+def clamp_speed(speed):
+    """Clamp any drive speed into the safe [SPEED_MIN, SPEED_MAX] band."""
+    return max(SPEED_MIN, min(SPEED_MAX, int(speed)))
+
+
+def step_speed(speed, delta):
+    """Bump speed by `delta` (e.g. +/- SPEED_STEP) and clamp it."""
+    return clamp_speed(speed + delta)
+
+
+# servo travel limits: pan sweeps 0-180, tilt 0-100 (mechanical safe range)
+SERVO_LIMITS = {'pan': (0, 180), 'tilt': (0, 100)}
+
+
+def nudge_servo(bot, axis, angle, delta):
+    """Move a camera servo by `delta`, clamped to its range, and apply over I2C.
+
+    axis is 'pan' or 'tilt'; `angle` is the current angle. Returns the new angle.
+    """
+    if axis not in SERVO_LIMITS:
+        raise ValueError(f"unknown servo axis '{axis}'")
+    lo, hi = SERVO_LIMITS[axis]
+    angle = max(lo, min(hi, angle + delta))
+    if axis == 'pan':
+        bot.set_pan(angle)
+    else:
+        bot.set_tilt(angle)
+    return angle
+
+
+# ── captures (R = 360 scan, V = single, T = build) ──────────────────────────────
+# Thin wrappers over scan360 / StereoCapture so the web server runs the EXACT
+# same steps the keyboard does — the workflow is defined once, here.
+
+def scan360_capture(bot, cam, out_root=None, log=print):
+    """R — rotate in place and capture a 360 sweep. Returns the session folder."""
+    return scan360.run_scan(bot, cam, out_root=out_root, log=log)
+
+
+def single_capture(cam, out_root=None):
+    """V — capture one RealSense frame into a folder. Returns the folder (or None)."""
+    return cam.save(out_root=out_root)
+
+
+def build_cloud(session, log=print):
+    """T — merge a captured 360 session into a .ply. Returns the .ply path."""
+    return scan360.build_from_session(session, log=log)
+
+
 def _ensure_cam(cam):
     """Open the D405 lazily on the first capture."""
     return cam if cam is not None else StereoCapture()
