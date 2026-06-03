@@ -53,8 +53,8 @@ ORBIT_SHOTS   = _CFG["shots"]    # views around the object (24 -> 15 deg each)
 ORBIT_RADIUS  = _CFG["radius"]   # metres from the camera to the object centre (~0.40)
 ROTATE_SPEED  = 40          # in-place turn speed
 FORWARD_SPEED = 40          # forward drive speed
-SEC_PER_DEG   = 2.73 / 360  # in-place rotation timing (same default as scan360)
-SEC_PER_M     = 2.2         # forward timing: seconds to drive 1 m (CALIBRATE!)
+SEC_PER_DEG   = 3.0 / 540   # in-place rotation timing (calibrated: 540 deg in 3.0s @ speed 40)
+SEC_PER_M     = 3.0 / 1.2   # forward timing (calibrated: 1.2 m in 3.0s @ speed 40)
 SETTLE        = 0.4         # pause for the chassis to settle before a shot
 ORBIT_DIR     = 1           # +1 = orbit one way, -1 the other (merge --dir must match)
 
