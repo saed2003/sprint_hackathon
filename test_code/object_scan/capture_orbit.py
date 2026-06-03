@@ -65,6 +65,17 @@ ORBIT_DIR     = 1           # +1 = strafe/orbit one way, -1 the other (merge --d
 # centroid tells us how far to turn. We turn until it is centred — open-loop turn
 # accuracy doesn't matter. TUNE FACE_SPEED/FACE_PULSE on the real robot.
 ZMIN, ZMAX    = _CFG["zmin"], _CFG["zmax"]   # object depth gate (the close thing in frame)
+# The vision loop tracks in a slightly WIDER gate than the build's segment gate, so a car
+# that drifted a little is still seen and pulled back instead of being lost (runaway).
+TRACK_ZMIN    = max(0.10, ZMIN - 0.03)
+TRACK_ZMAX    = ZMAX + 0.12
+# Floor removal: the depth gate also catches the floor (it fills the lower frame and is
+# within range), which would hijack the aim/range loop. We RANSAC the dominant plane and,
+# if it's big + ~horizontal, drop it so only the OBJECT (sitting on it) drives the loop.
+FLOOR_THRESH  = 0.015       # plane inlier distance (m) — points within this are "on the plane"
+FLOOR_MIN_FRAC= 0.30        # only treat a plane as floor if it's at least this fraction of pts
+FLOOR_VERT    = 0.6         # ...and its normal is this vertical (|n_y|) — excludes walls
+REACQUIRE_PULSES = 5        # base sweeps to re-find the object if it falls out of the gate
 FACE_SPEED    = 35          # base turn speed while facing the object (raise if it won't move)
 FACE_PULSE    = 0.10        # seconds per corrective turn pulse (lower if it overshoots)
 FACE_TOL_PX   = 50          # object counts as 'centred' within this many px of centre
@@ -74,19 +85,79 @@ RADIUS_TOL    = 0.05        # only correct distance if off target by more than t
 RADIUS_MAX_STEP = 0.10      # cap a single in/out correction drive (m), for safety
 
 
-def object_centroid_and_distance(depth_m, ppx):
-    """From a depth frame, find the close object's horizontal centroid pixel + distance.
+def _remove_floor(pts):
+    """Return a boolean mask of points that are NOT on the floor.
+
+    RANSAC the dominant plane in `pts` (Nx3, camera frame, +y = down). If that plane is
+    large (>= FLOOR_MIN_FRAC of points) AND roughly horizontal (|normal_y| >= FLOOR_VERT),
+    it's the floor → keep everything off it. Otherwise (object fills the frame, or only a
+    wall was found) keep everything. Pure numpy, so it runs on the Pi (no Open3D)."""
+    n = len(pts)
+    if n < 200:
+        return np.ones(n, bool)
+    rng = np.random.default_rng(0)                       # deterministic
+    s = pts if n <= 4000 else pts[rng.choice(n, 4000, replace=False)]
+    best_cnt, best_nrm, best_p0 = 0, None, None
+    for _ in range(80):
+        p0, p1, p2 = s[rng.choice(len(s), 3, replace=False)]
+        nrm = np.cross(p1 - p0, p2 - p0)
+        ln = np.linalg.norm(nrm)
+        if ln < 1e-6:
+            continue
+        nrm = nrm / ln
+        cnt = int((np.abs((s - p0) @ nrm) < FLOOR_THRESH).sum())
+        if cnt > best_cnt:
+            best_cnt, best_nrm, best_p0 = cnt, nrm, p0
+    if best_nrm is None:
+        return np.ones(n, bool)
+    if best_cnt >= FLOOR_MIN_FRAC * len(s) and abs(best_nrm[1]) >= FLOOR_VERT:
+        return np.abs((pts - best_p0) @ best_nrm) >= FLOOR_THRESH   # keep = off the floor
+    return np.ones(n, bool)                              # no convincing floor — keep all
+
+
+def _largest_blob(vs, us, keep, shape):
+    """Restrict `keep` (a mask over the gated pixels at rows `vs`, cols `us`) to its
+    largest connected blob — the object — so a stray wall/background patch can't drag the
+    centroid. Uses cv2 (present on the Pi); returns `keep` unchanged if cv2 is missing."""
+    try:
+        import cv2
+    except Exception:
+        return keep
+    img = np.zeros(shape, np.uint8)
+    img[vs[keep], us[keep]] = 255
+    num, lab, stats, _ = cv2.connectedComponentsWithStats(img, 8)
+    if num <= 1:
+        return keep
+    best = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))   # skip background label 0
+    return keep & (lab[vs, us] == best)
+
+
+def object_centroid_and_distance(depth_m, intr):
+    """Find the object's horizontal centroid pixel + distance, IGNORING the floor.
+
+    Back-projects the depth-gated pixels to 3D, removes the floor plane (see
+    `_remove_floor`), and returns the centroid/median of what's left — the object on its
+    stand. Without this the floor (~85k px in our captures) dominated the mask and the
+    aim/range loop tracked the floor while the car drifted out of frame.
 
     Returns (u_centroid, distance_m, n_pixels) or (None, None, 0) if nothing close.
     """
-    mask = (depth_m > ZMIN) & (depth_m < ZMAX)
-    n = int(mask.sum())
-    if n < 500:
+    gate = (depth_m > TRACK_ZMIN) & (depth_m < TRACK_ZMAX)
+    if int(gate.sum()) < 500:
         return None, None, 0
-    ys, xs = np.where(mask)
-    u = float(xs.mean())
-    d = float(np.median(depth_m[mask]))
-    return u, d, n
+    vs, us = np.where(gate)
+    z = depth_m[gate]
+    x = (us - intr.ppx) * z / intr.fx
+    y = (vs - intr.ppy) * z / intr.fy                    # +y = down
+    keep = _remove_floor(np.stack([x, y, z], axis=1))
+    if int(keep.sum()) < 300:                            # floor removal ate the object — distrust it
+        keep = np.ones(len(z), bool)
+    keep = _largest_blob(vs, us, keep, depth_m.shape)    # object only, drop background slivers
+    if int(keep.sum()) < 200:
+        return None, None, 0
+    u = float(us[keep].mean())
+    d = float(np.median(z[keep]))
+    return u, d, int(keep.sum())
 
 
 def face_object(bot, cam, log=print):
@@ -100,7 +171,7 @@ def face_object(bot, cam, log=print):
         depth = cam.grab_depth()
         if depth is None:
             break
-        u, d, n = object_centroid_and_distance(depth, cam.intr.ppx)
+        u, d, n = object_centroid_and_distance(depth, cam.intr)
         if u is None:
             log("    (object lost — check distance/lighting/ZMIN-ZMAX)")
             break
@@ -125,7 +196,7 @@ def hold_radius(bot, cam, radius, log=print):
     depth = cam.grab_depth()
     if depth is None:
         return None
-    _, d, n = object_centroid_and_distance(depth, cam.intr.ppx)
+    _, d, n = object_centroid_and_distance(depth, cam.intr)
     if d is None:
         return None
     err = d - radius                                # +err: too far -> drive forward
@@ -138,7 +209,7 @@ def hold_radius(bot, cam, radius, log=print):
         log(f"    radius hold: was {d*100:.0f}cm, nudged {move*100:+.0f}cm toward {radius*100:.0f}cm")
         depth = cam.grab_depth()
         if depth is not None:
-            _, d2, _ = object_centroid_and_distance(depth, cam.intr.ppx)
+            _, d2, _ = object_centroid_and_distance(depth, cam.intr)
             d = d2 or d
     return d
 
@@ -169,6 +240,21 @@ def orbit_strafe(bot, chord, log=print):
     log(f"    orbit strafe: {'right' if ORBIT_DIR >= 0 else 'left'} {chord*100:.1f}cm ({t:.2f}s)")
 
 
+def reacquire_object(bot, cam, log=print):
+    """If the object fell out of the gate, sweep the base in widening left/right pulses to
+    bring it back BEFORE advancing — otherwise the orbit runs away tracking nothing.
+    Returns True once the object is back in the gate, else False after REACQUIRE_PULSES."""
+    log("    object lost — sweeping to re-acquire")
+    for k in range(1, REACQUIRE_PULSES + 1):
+        depth = cam.grab_depth()
+        if depth is not None and object_centroid_and_distance(depth, cam.intr)[0] is not None:
+            return True
+        (bot.rotate_right if k % 2 else bot.rotate_left)(FACE_SPEED)   # alternate, widening
+        time.sleep(FACE_PULSE * k)
+        bot.stop(); time.sleep(0.15)
+    return False
+
+
 def run_orbit(bot, cam, shots=ORBIT_SHOTS, radius=ORBIT_RADIUS, out_root=None, log=print):
     """Stop-and-shoot orbit. Returns the session folder of shot_NN captures."""
     out_root = out_root or default_out_root()
@@ -186,9 +272,13 @@ def run_orbit(bot, cam, shots=ORBIT_SHOTS, radius=ORBIT_RADIUS, out_root=None, l
     for i in range(shots):
         bot.stop(); time.sleep(SETTLE)
         dist = face_object(bot, cam, log=log)           # vision: turn the base to face the DB5
+        if dist is None and reacquire_object(bot, cam, log=log):
+            dist = face_object(bot, cam, log=log)       # re-found it -> face it again
         held = hold_radius(bot, cam, radius, log=log)   # vision: keep ~constant radius
         dist = held or dist
         face_object(bot, cam, log=log)                  # re-face after any in/out nudge
+        if dist is None:
+            log("    object still not in view — capturing anyway; the merge drops bad views")
         folder = os.path.join(session, f"shot_{i:02d}")
         ok = cam.save_to(folder)
         with open(os.path.join(folder, "angle.txt"), "w") as f:
