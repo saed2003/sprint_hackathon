@@ -20,11 +20,12 @@ from setup_and_api.api import RasBot
 #  outer pair ~55mm apart (P1/P4).
 # ═══════════════════════════════════════════════════════
 BASE_SPEED    = 85     # cruise speed on a straight
-Kp            = 28     # was 45 — lower stops straight-line oscillation
-SMOOTH        = 0.22   # was 0.30 — slower settling reduces bounce
+Kp            = 28     # proportional gain
+Kd            = 10     # derivative gain — brakes rapid error changes (kills oscillation)
+SMOOTH        = 0.22   # motor smoothing: 0.1=silky, 0.5=snappy
 LOST_SPEED    = 80     # sweep speed when searching for lost line
 DEBOUNCE      = 2      # consecutive all-off reads before declaring "lost"
-LOOP_DELAY    = 0.01   # 100 Hz
+LOOP_DELAY    = 0.01   # 100 Hz — keep fast so derivative math is accurate
 # ═══════════════════════════════════════════════════════
 
 
@@ -81,12 +82,13 @@ def main():
                         # ── 3. MEMORY SWEEP (from simple_follow.py) ───────
                         error = -3.0 if last_error < 0 else (3.0 if last_error > 0 else 0.0)
 
-                # save last real error for recovery
-                if 0 < abs(error) < 3:
-                    last_error = error
+                # ── 4. PD CORRECTION ─────────────────────────────────────
+                derivative = error - last_error
+                correction = Kp * error + Kd * derivative
 
-                # ── 4. P-CORRECTION ───────────────────────────────────────
-                correction = Kp * error
+                # save last real error for recovery + next derivative
+                if abs(error) < 3:
+                    last_error = error
                 target_L   = BASE_SPEED + correction
                 target_R   = BASE_SPEED - correction
 
@@ -142,10 +144,11 @@ def run(bot, stop_event=None, **kwargs):
                 else:
                     error = -3.0 if last_error < 0 else (3.0 if last_error > 0 else 0.0)
 
-            if 0 < abs(error) < 3:
-                last_error = error
+            derivative = error - last_error
+            correction = Kp * error + Kd * derivative
 
-            correction = Kp * error
+            if abs(error) < 3:
+                last_error = error
             target_L   = BASE_SPEED + correction
             target_R   = BASE_SPEED - correction
 
