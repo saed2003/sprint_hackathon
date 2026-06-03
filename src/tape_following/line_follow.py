@@ -90,9 +90,9 @@ from setup_and_api.api import RasBot, Color
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # ── speed zones (0-255) ───────────────────────────────────────────────────────
-BASE_SPEED    = 35    # STRAIGHT state — full cruise speed
-CURVE_SPEED   = 28    # CURVE state   — gentle curve (|err|=1-2)
-SHARP_SPEED   = 22    # SHARP state   — tight curve  (|err|=3-4, differential)
+BASE_SPEED    = 30    # STRAIGHT state — full cruise speed
+CURVE_SPEED   = 24    # CURVE state   — gentle curve (|err|=1-2)
+SHARP_SPEED   = 20    # SHARP state   — tight curve  (|err|=3-4, differential)
 UTURN_SPEED   = 18    # UTURN state   — pivot speed  (in-place rotation)
 MIN_SPEED     = 15    # hard floor — motors stall below this
 MAX_SPEED     = 255
@@ -106,31 +106,31 @@ RAMP_RATE     = 5
 
 # ── per-state PID gains ───────────────────────────────────────────────────────
 # Derivative uses smoothed multi-tick window — safe up to ~0.15
-KP_S, KI_S, KD_S = 7.0, 0.0, 0.10   # STRAIGHT — gentle centre tracking
-KP_C, KI_C, KD_C = 9.0, 0.0, 0.10   # CURVE    — stronger correction
-KP_U, KI_U, KD_U = 5.0, 0.0, 0.05   # UTURN    — pivot control (smooth)
+KP_S, KI_S, KD_S = 9.0,  0.0, 0.08   # STRAIGHT — gentle centre tracking
+KP_C, KI_C, KD_C = 13.0, 0.0, 0.08   # CURVE    — stronger correction
+KP_U, KI_U, KD_U = 5.0,  0.0, 0.05   # UTURN    — pivot control (smooth)
 MAX_INTEGRAL      = 20.0
-MAX_CORRECTION    = 22
+MAX_CORRECTION    = 30                 # was 22 — allows fuller turns on corners
 
 # ── prediction / history ──────────────────────────────────────────────────────
-HISTORY_SIZE       = 15   # sensor-error history length (= 300 ms at 50 Hz)
-DERIV_WINDOW       = 4    # ticks for smoothed derivative (80 ms)
-TREND_THRESHOLD    = 1.0  # |trend| above this → speed penalty fires
-SPEED_PENALTY_MAX  = 10   # max speed reduction from prediction
+HISTORY_SIZE       = 10   # faster reaction to corners (was 15)
+DERIV_WINDOW       = 3    # ticks for smoothed derivative (was 4)
+TREND_THRESHOLD    = 0.7  # fire speed penalty sooner (was 1.0)
+SPEED_PENALTY_MAX  = 12   # slightly more braking before corners (was 10)
 SPEED_PENALTY_K    = 5.0
-SHARP_CORNER_TREND = 1.0  # |trend| + |err|≥3 → corner pivot + latch
-CORNER_LATCH_TICKS = 4    # minimum ticks to hold pivot after corner detected
+SHARP_CORNER_TREND = 0.6  # trigger corner pivot earlier — fixes missed corners (was 1.0)
+CORNER_LATCH_TICKS = 8    # hold pivot longer so it actually turns (was 4)
 
 # ── state machine ─────────────────────────────────────────────────────────────
-UTURN_TIMEOUT_S    = 3.0  # give up U-turn search after this long
-RECOVERY_TIMEOUT_S = 4.0  # give up recovery (straight-loss) after this long
+UTURN_TIMEOUT_S    = 4.0  # more time for U-turns (was 3.0)
+RECOVERY_TIMEOUT_S = 6.0  # more time to recover lost line (was 4.0)
 UTURN_PROBE_S      = 0.5  # how long to probe each direction at U-turn start
-DEBOUNCE_TICKS     = 2    # consecutive all-off reads before confirming MISS
+DEBOUNCE_TICKS     = 1    # react to lost line faster (was 2)
 
 # ── loop ──────────────────────────────────────────────────────────────────────
 LOOP_HZ    = 50
 LOOP_DELAY = 1.0 / LOOP_HZ
-DEBUG      = True
+DEBUG      = False         # was True — disabling reduces jerkiness from print overhead
 DEBUG_EVERY = 5
 
 # ── junction / stop marker ────────────────────────────────────────────────────
