@@ -87,12 +87,50 @@ camera turns away from the figure.
 | `run.py` | **the one entry point** — capture (synth/turntable/orbit) → build → mesh → preview |
 | `config.py` | object + scan settings (Teemo dims, radius, depth gate, crop, shots) — tune here |
 | `segment.py` | capture folder → object-only point cloud (depth gate + RANSAC plane removal + crop) |
-| `build_object.py` | **the merge** — segment all views, object-centred angle prior + axis refinement, Open3D multiway ICP (ring + loop closure), fuse → `merged_object.ply` |
+| `build_object.py` | **the merge (laptop, sharpest)** — per-view masked features → Open3D point-to-plane ICP refine, windowed redundant ring + edge gating + symmetry-fold veto + largest-component pose-graph global optimisation, fuse → `merged_object.ply` |
+| `trim_car.py` | post-process: cut the stand off a `merged_object.ply` → `merged_car.ply` (+ mesh) |
 | `mesh.py` | point cloud → watertight textured **mesh** (Poisson; `--bpa` ball-pivoting fallback) |
 | `preview.py` | headless 4-view PNG of any cloud/mesh (works over SSH) |
 | `capture_session.py` | turntable/hand-stepped capturer (own RealSense pipeline, **aligned colour** → coloured model) |
 | `capture_orbit.py` | robot stop-and-shoot orbit (Pi): pan-servo aim + radius-hold + turn-drive-turn stepping |
+| `build_object_pi.py` | the friend's **pure-numpy/cv2** feature merge — runs on the **Pi** (no Open3D) |
+| **`run_pi.py` / `run_pi2.py` / `run_pi_template.py`** | **all-on-the-Pi** capture+merge → `.ply` (no Open3D, no mesh) — see below |
+| `db5_template.npz` | canonical DB5 cloud for `run_pi_template.py` (made once on the laptop) |
 | `_synth_test.py` | renders a synthetic Teemo-scale scan so you can test the whole build with no camera |
+
+## Run it ALL on the Pi (no Open3D) — `run_pi*.py`
+
+The normal merge needs Open3D (laptop only). These three scripts do **capture + merge → `.ply`
+entirely on the Pi** in pure numpy/cv2 (reusing `build_object_pi.py`). **No mesh.** Each is one
+command; each also takes `--build captures/orbit_<ts>` to skip capture and merge an existing scan.
+They are new, isolated files — they change nothing else and never touch the running robot.
+
+| Script | What it adds | Output |
+|---|---|---|
+| `run_pi.py` | the friend's **feature merge** (fast, coarse) | `object_pi.ply` |
+| `run_pi2.py` | pure-numpy **point-to-plane ICP** refine + **symmetry-fold veto** + **known-model stand-crop** (drops the rotationally-symmetric stand using the car's known height, so ICP/features lock on the distinctive car). `--relax-iters` pose-graph relax is **off by default** (it spread the cloud). | `object_pi_hq.ply` (car-only) |
+| `run_pi_template.py` | **model-to-frame**: snaps each view onto a saved canonical **template** with **leeway** (trimmed ICP + orientation search + drops non-conforming views — because captures vary) | `object_pi_tpl.ply` |
+
+```bash
+# on the Pi (RasBot + pyrealsense2 + cv2 + numpy; scipy optional; NO Open3D):
+python3 run_pi.py                       # --object teemo | --shots 36 | --radius 0.35 | --sift
+python3 run_pi2.py                      # --reg-voxel | --icp-iters | --win | --relax-iters | --keep-stand
+python3 run_pi_template.py              # --leeway 0.03 | --template db5_template.npz | --fit-min 0.45
+python3 run_pi2.py --build captures/orbit_<ts>     # any of them: merge an existing scan, no robot
+```
+
+The template is made **once on the laptop** (needs Open3D) and committed so the Pi just loads it:
+```bash
+../../../.venv/bin/python -c "import numpy as np,open3d as o3d; p=o3d.io.read_point_cloud('captures/<good_scan>/merged_car.ply').voxel_down_sample(0.003); np.savez_compressed('db5_template.npz', pts=np.asarray(p.points,np.float32), cols=(np.asarray(p.colors)*255).astype(np.uint8))"
+```
+
+> ⚠️ **Honest quality note.** All three Pi merges come out **noticeably fuzzier than the laptop
+> `build_object.py`**. The laptop wins because of Open3D's *joint* robust pose-graph optimisation
+> (all views constrained against each other at once); the numpy stand-ins (BFS+loop, median relax,
+> per-view template ICP) can't match it, and the template's leeway trades sharpness for robustness
+> to capture variation. **For the sharpest `.ply`: capture on the Pi, build on the laptop** with
+> `build_object.py` (+ `trim_car.py`) — or run `build_object.py` on the Pi *if* it has Open3D. The
+> `run_pi*` scripts are for getting a usable cloud with **no laptop and no Open3D**.
 
 ## How the merge works (and why it reuses the room-scan idea)
 
