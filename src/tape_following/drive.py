@@ -180,6 +180,12 @@ def main():
                                 action = 'LINE FOLLOWING'
                                 bot.set_all_leds_color(Color.BLUE)
                                 print('--- line following started (F to stop) ---')
+                                # ── GAME: autonomous run start ─────────────
+                                try:
+                                    from game.game_engine import GameEngine
+                                    GameEngine.instance().on_run_start("autonomous")
+                                except Exception:
+                                    pass
                             else:
                                 follow_stop.set()
                                 if follow_thread:
@@ -188,6 +194,12 @@ def main():
                                 bot.set_all_leds_color(Color.GREEN)
                                 action = 'stopped (manual)'
                                 print('--- line following stopped ---')
+                                # ── GAME: run end ──────────────────────────
+                                try:
+                                    from game.game_engine import GameEngine
+                                    GameEngine.instance().on_run_end()
+                                except Exception:
+                                    pass
 
                         # ── speed (only in manual mode) ────────────────────
                         elif not follow_mode:
@@ -219,6 +231,15 @@ def main():
                                     bot.set_all_leds_color(Color.GREEN); bot.beep(0.15)
                                     action = f'captured {os.path.basename(last_session)}'
                                     print(f'--- done -> {last_session} ---')
+                                    # ── GAME: manual run start + checkpoint ─
+                                    try:
+                                        from game.game_engine import GameEngine
+                                        ge = GameEngine.instance()
+                                        if not ge.get_state().get("run_active"):
+                                            ge.on_run_start("manual")
+                                        ge.on_checkpoint(str(last_session))
+                                    except Exception:
+                                        pass
                                 except Exception as e:
                                     bot.stop(); bot.set_all_leds_color(Color.RED)
                                     action = 'capture error'; print('capture error:', e)
@@ -237,6 +258,12 @@ def main():
                                         bot.set_all_leds_color(Color.GREEN); bot.beep(0.15)
                                         action = 'cloud built'
                                         print(f'--- cloud -> {last_ply} ---')
+                                        # ── GAME: 360 scan complete ────────
+                                        try:
+                                            from game.game_engine import GameEngine
+                                            GameEngine.instance().on_scan_360(str(last_ply))
+                                        except Exception:
+                                            pass
                                     except Exception as e:
                                         bot.set_all_leds_color(Color.RED)
                                         action = 'build error'; print('build error:', e)

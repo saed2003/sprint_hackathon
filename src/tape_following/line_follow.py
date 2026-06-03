@@ -849,7 +849,14 @@ class LineFollower:
     def _do_scan(self, bot, cam, log) -> None:
         bot.set_all_leds_color(Color.BLUE); bot.beep(0.1)
         if SKIP_SCAN:
-            log("Stop marker — 1 s pause"); time.sleep(1.0); return
+            log("Stop marker — 1 s pause"); time.sleep(1.0)
+            # ── GAME: checkpoint even when SKIP_SCAN ──────────────────────
+            try:
+                from game.game_engine import GameEngine
+                GameEngine.instance().on_checkpoint("")
+            except Exception:
+                pass
+            return
         if cam is None:
             log("Scan skipped: no camera"); return
         import traceback
@@ -857,6 +864,14 @@ class LineFollower:
         try:
             session, _ = scan360.scan_and_build(bot, cam, log=log)
             log(f"Scan: {os.path.basename(session)}"); bot.beep(0.15)
+            # ── GAME: checkpoint + 360 scan ───────────────────────────────
+            try:
+                from game.game_engine import GameEngine
+                ge = GameEngine.instance()
+                ge.on_checkpoint(str(session))
+                ge.on_scan_360(str(session))
+            except Exception:
+                pass
         except Exception:
             log(f"Scan error:\n{traceback.format_exc()}")
 

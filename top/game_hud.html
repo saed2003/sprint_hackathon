@@ -1,0 +1,970 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🗺 ROBO EXPLORER — Game HUD</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+
+  body {
+    background: #0a0c10;
+    color: #e0e0e0;
+    font-family: 'Segoe UI', monospace;
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── TOP BAR ──────────────────────────────────── */
+  #topbar {
+    background: linear-gradient(90deg, #0d1117 0%, #141b22 100%);
+    border-bottom: 2px solid #1e8bc3;
+    padding: 8px 20px;
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    flex-shrink: 0;
+  }
+  #topbar .title {
+    font-size: 20px;
+    font-weight: bold;
+    color: #4fc3f7;
+    text-shadow: 0 0 12px #4fc3f766;
+    letter-spacing: 2px;
+  }
+  .top-stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 80px;
+  }
+  .top-stat .label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 1px; }
+  .top-stat .value { font-size: 22px; font-weight: bold; color: #fff; font-family: monospace; }
+  .top-stat.score .value  { color: #ffd54f; text-shadow: 0 0 8px #ffd54f66; }
+  .top-stat.level .value  { color: #81c784; text-shadow: 0 0 8px #81c78466; }
+  .top-stat.timer .value  { color: #ef9a9a; }
+
+  /* XP bar */
+  #xpBarWrap {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  #xpBarWrap .label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 1px; }
+  #xpBarBg {
+    height: 10px;
+    background: #1e2530;
+    border-radius: 5px;
+    overflow: hidden;
+    border: 1px solid #2a3545;
+  }
+  #xpBarFill {
+    height: 100%;
+    background: linear-gradient(90deg, #1e88e5, #42a5f5, #81d4fa);
+    border-radius: 5px;
+    transition: width 0.6s ease;
+    box-shadow: 0 0 8px #42a5f566;
+    width: 0%;
+  }
+  #xpText { font-size: 10px; color: #888; text-align: right; }
+
+  /* status badge */
+  #statusBadge {
+    padding: 5px 14px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: bold;
+    letter-spacing: 1px;
+    background: #1e2530;
+    border: 1px solid #333;
+    color: #888;
+    transition: all 0.3s;
+  }
+  #statusBadge.scanning  { background:#0d2d1a; border-color:#2e7d32; color:#81c784; box-shadow:0 0 12px #2e7d3244; }
+  #statusBadge.danger    { background:#2d0d0d; border-color:#c62828; color:#ef9a9a; box-shadow:0 0 12px #c6282844; animation:pulse-badge 0.5s infinite alternate; }
+  #statusBadge.idle      { background:#1e2530; border-color:#333; color:#888; }
+
+  @keyframes pulse-badge { from { box-shadow:0 0 8px #c6282844; } to { box-shadow:0 0 20px #c62828aa; } }
+
+  /* ── MAIN AREA ────────────────────────────────── */
+  #main {
+    flex: 1;
+    display: flex;
+    gap: 12px;
+    padding: 12px;
+    overflow: hidden;
+  }
+
+  /* ── LEFT: MAP + CAMERA ───────────────────────── */
+  #leftCol {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    flex: 0 0 420px;
+  }
+
+  .panel {
+    background: #0d1117;
+    border: 1px solid #1e2d3d;
+    border-radius: 8px;
+    padding: 10px;
+  }
+  .panel-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: #4fc3f7;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .panel-title::before {
+    content: '';
+    width: 3px; height: 12px;
+    background: #4fc3f7;
+    border-radius: 2px;
+    box-shadow: 0 0 6px #4fc3f7;
+  }
+
+  /* fog-of-war canvas */
+  #mapCanvas {
+    width: 100%;
+    border-radius: 6px;
+    display: block;
+    image-rendering: pixelated;
+  }
+
+  /* camera feed */
+  #cameraPanel { flex: 1; }
+  #cameraFeed {
+    width: 100%;
+    height: calc(100% - 28px);
+    background: #050810;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    position: relative;
+    min-height: 140px;
+  }
+  #cameraFeed img {
+    width: 100%; height: 100%; object-fit: contain;
+  }
+  #cameraOverlay {
+    position: absolute; inset: 0;
+    pointer-events: none;
+    border-radius: 6px;
+    border: 2px solid transparent;
+    transition: border-color 0.3s, box-shadow 0.3s;
+  }
+  #cameraOverlay.danger {
+    border-color: #ef5350;
+    box-shadow: inset 0 0 30px #ef535044, 0 0 20px #ef535044;
+    animation: pulse-border 0.5s infinite alternate;
+  }
+  @keyframes pulse-border { from { opacity:0.6; } to { opacity:1; } }
+
+  /* ── RIGHT: STATS + ACHIEVEMENTS ─────────────── */
+  #rightCol {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    overflow: hidden;
+  }
+
+  /* bars row */
+  #barsRow {
+    display: flex;
+    gap: 10px;
+    flex-shrink: 0;
+  }
+  .stat-bar-panel {
+    flex: 1;
+    background: #0d1117;
+    border: 1px solid #1e2d3d;
+    border-radius: 8px;
+    padding: 10px 14px;
+  }
+  .bar-label {
+    font-size: 11px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 5px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .bar-label span { color: #ccc; font-weight: bold; }
+  .bar-bg {
+    height: 12px;
+    background: #1e2530;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid #2a3545;
+  }
+  .bar-fill {
+    height: 100%;
+    border-radius: 6px;
+    transition: width 0.8s ease;
+  }
+  .bar-fill.battery { background: linear-gradient(90deg, #43a047, #66bb6a); box-shadow: 0 0 6px #43a04766; }
+  .bar-fill.explore { background: linear-gradient(90deg, #7b1fa2, #ab47bc); box-shadow: 0 0 6px #7b1fa266; }
+  .bar-fill.scan    { background: linear-gradient(90deg, #f57c00, #ffa726); box-shadow: 0 0 6px #f57c0066; }
+
+  /* checkpoints grid */
+  #checkpointsPanel {
+    flex-shrink: 0;
+  }
+  #checkpointDots {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding-top: 4px;
+  }
+  .cp-dot {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    background: #1e2530;
+    border: 2px solid #2a3545;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    transition: all 0.4s;
+    position: relative;
+  }
+  .cp-dot.done {
+    background: radial-gradient(circle, #1565c0, #0d47a1);
+    border-color: #42a5f5;
+    box-shadow: 0 0 10px #42a5f566;
+  }
+  .cp-dot.current {
+    background: radial-gradient(circle, #e65100, #bf360c);
+    border-color: #ff7043;
+    box-shadow: 0 0 14px #ff704366;
+    animation: pulse-dot 0.8s infinite alternate;
+  }
+  @keyframes pulse-dot { from { box-shadow:0 0 8px #ff704344; } to { box-shadow:0 0 18px #ff7043aa; } }
+
+  /* achievements list */
+  #achievementsPanel {
+    flex: 1;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  #achievementsList {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-right: 4px;
+  }
+  #achievementsList::-webkit-scrollbar { width: 4px; }
+  #achievementsList::-webkit-scrollbar-track { background: #0a0c10; }
+  #achievementsList::-webkit-scrollbar-thumb { background: #1e2d3d; border-radius: 2px; }
+
+  .ach-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: #0d1117;
+    border: 1px solid #1e2d3d;
+    transition: all 0.3s;
+  }
+  .ach-item.unlocked {
+    background: linear-gradient(90deg, #0d2030, #0d1117);
+    border-color: #1e5c7a;
+    box-shadow: 0 0 8px #1e5c7a33;
+  }
+  .ach-item.locked { opacity: 0.35; }
+  .ach-icon  { font-size: 22px; flex-shrink: 0; }
+  .ach-info  { flex: 1; min-width: 0; }
+  .ach-title { font-size: 13px; font-weight: bold; color: #e0e0e0; }
+  .ach-desc  { font-size: 11px; color: #666; }
+  .ach-xp    { font-size: 11px; color: #ffd54f; font-weight: bold; white-space: nowrap; }
+  .ach-date  { font-size: 10px; color: #4fc3f7; white-space: nowrap; }
+
+  /* run history */
+  #historyPanel { flex-shrink: 0; }
+  #historyTable {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+  }
+  #historyTable th {
+    text-align: left; color: #555;
+    padding: 3px 6px;
+    border-bottom: 1px solid #1e2d3d;
+    text-transform: uppercase; letter-spacing: 1px;
+  }
+  #historyTable td {
+    padding: 4px 6px;
+    color: #aaa;
+    border-bottom: 1px solid #0f1620;
+  }
+  #historyTable tr:last-child td { border-bottom: none; }
+  #historyTable .xp-col { color: #ffd54f; }
+
+  /* ── ACHIEVEMENT POPUP ────────────────────────── */
+  #achievementPopup {
+    position: fixed;
+    top: 70px; right: 20px;
+    width: 320px;
+    background: linear-gradient(135deg, #0d2030, #0d1117);
+    border: 1px solid #1e8bc3;
+    border-radius: 12px;
+    padding: 16px 20px;
+    box-shadow: 0 0 30px #1e8bc366, 0 8px 32px rgba(0,0,0,0.6);
+    transform: translateX(360px);
+    transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+    z-index: 1000;
+  }
+  #achievementPopup.show { transform: translateX(0); }
+  #popupIcon  { font-size: 36px; margin-bottom: 6px; }
+  #popupType  { font-size: 10px; color: #4fc3f7; text-transform: uppercase; letter-spacing: 2px; }
+  #popupTitle { font-size: 18px; font-weight: bold; color: #fff; margin: 4px 0; }
+  #popupDesc  { font-size: 12px; color: #aaa; }
+  #popupXP    { margin-top: 8px; font-size: 14px; color: #ffd54f; font-weight: bold; }
+  #popupBar   { height: 3px; background: linear-gradient(90deg, #1e8bc3, #42a5f5); border-radius: 2px; margin-top: 12px; animation: shrink 4s linear forwards; }
+  @keyframes shrink { from { width:100%; } to { width:0%; } }
+
+  /* ── DANGER OVERLAY ───────────────────────────── */
+  #dangerOverlay {
+    position: fixed; inset: 0;
+    pointer-events: none;
+    border: 6px solid #ef5350;
+    border-radius: 0;
+    opacity: 0;
+    transition: opacity 0.3s;
+    z-index: 500;
+    box-shadow: inset 0 0 60px #ef535044;
+  }
+  #dangerOverlay.show { opacity: 1; animation: flash-screen 0.5s infinite alternate; }
+  @keyframes flash-screen { from { opacity:0.4; } to { opacity:1; } }
+
+  #dangerText {
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+    pointer-events: none;
+    z-index: 501;
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+  #dangerText.show { opacity: 1; }
+  #dangerText h1 { font-size: 48px; color: #ef5350; text-shadow: 0 0 20px #ef5350; letter-spacing: 4px; }
+  #dangerText p  { font-size: 20px; color: #fff; margin-top: 4px; }
+
+  /* config bar */
+  #configBar {
+    background: #060809;
+    border-top: 1px solid #1e2d3d;
+    padding: 6px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+    font-size: 11px;
+    color: #555;
+  }
+  #configBar input {
+    background: #0d1117; border: 1px solid #1e2d3d; color: #aaa;
+    border-radius: 4px; padding: 3px 8px; font-size: 11px; width: 140px;
+  }
+  #configBar button {
+    background: #1565c0; color: #fff; border: none; border-radius: 4px;
+    padding: 3px 10px; font-size: 11px; cursor: pointer;
+  }
+  #configBar button:hover { background: #1976d2; }
+  .cfg-sep { color: #222; }
+  /* ── help button + intro modal ─────────────────────────────── */
+  #helpBtn {
+    width: 34px; height: 34px; flex: 0 0 auto;
+    border-radius: 50%;
+    border: 1px solid #19e0ff;
+    background: rgba(8,20,28,.9); color: #19e0ff;
+    font: 700 18px/1 'Share Tech Mono', monospace;
+    cursor: pointer; margin-right: 14px;
+    box-shadow: 0 0 10px rgba(25,224,255,.5);
+    transition: background .15s, box-shadow .15s;
+  }
+  #helpBtn:hover { background: rgba(25,224,255,.18); box-shadow: 0 0 16px rgba(25,224,255,.9); }
+
+  #introOverlay {
+    position: fixed; inset: 0; z-index: 9999;
+    background: rgba(3,5,9,.92);
+    display: flex; align-items: center; justify-content: center;
+    backdrop-filter: blur(3px);
+  }
+  #introOverlay.hidden { display: none; }
+  #introModal {
+    width: min(720px, 92vw); max-height: 90vh; overflow-y: auto;
+    background: #0a0c10;
+    border: 1.5px solid #19e0ff;
+    border-radius: 14px;
+    box-shadow: 0 0 40px rgba(25,224,255,.45), inset 0 0 60px rgba(25,224,255,.06);
+    padding: 30px 38px; color: #cfe9f2;
+    font: 14px/1.55 'Share Tech Mono', monospace;
+  }
+  #introModal h1 {
+    margin: 0 0 6px; text-align: center;
+    color: #19e0ff; font-size: 30px; letter-spacing: 3px;
+    text-shadow: 0 0 14px rgba(25,224,255,.8);
+  }
+  #introModal h2 {
+    color: #7fffd4; font-size: 15px; letter-spacing: 2px;
+    margin: 20px 0 8px; border-bottom: 1px solid rgba(25,224,255,.25); padding-bottom: 4px;
+  }
+  #introModal p     { margin: 8px 0; color: #9fb6c2; }
+  #introModal ul    { margin: 6px 0; padding-left: 22px; }
+  #introModal li    { margin: 5px 0; }
+  #introModal b     { color: #ffd54a; }
+  #introModal .score-line b { color: #19e0ff; }
+  #introStart {
+    display: block; margin: 26px auto 4px; padding: 13px 34px;
+    background: linear-gradient(180deg,#19e0ff,#0a9fcc); color: #04141c;
+    border: none; border-radius: 8px; cursor: pointer;
+    font: 700 16px/1 'Share Tech Mono', monospace; letter-spacing: 2px;
+    box-shadow: 0 0 22px rgba(25,224,255,.7);
+    transition: transform .12s, box-shadow .12s;
+  }
+  #introStart:hover { transform: translateY(-2px); box-shadow: 0 0 32px rgba(25,224,255,1); }
+</style>
+</head>
+<body>
+
+<!-- ── INTRO / EXPLANATION MODAL ────────────────── -->
+<div id="introOverlay" class="hidden">
+  <div id="introModal">
+    <h1>🗺 ROBO EXPLORER</h1>
+    <p>Your robot is an explorer in an unknown room. The map starts completely
+       dark. As the robot navigates and scans, it reveals the world — just like
+       fog of war in strategy games.</p>
+
+    <h2>HOW TO PLAY</h2>
+    <ul>
+      <li>Press <b>F</b> in the drive window to start autonomous line following —
+          the robot follows the black tape on the floor.</li>
+      <li>Every <b>stop marker</b> on the tape triggers a 360° depth scan — this
+          is your <b>CHECKPOINT</b>.</li>
+      <li>Each checkpoint reveals part of the fog map and awards XP.</li>
+      <li>Complete the full path to finish the run.</li>
+      <li>Unlock achievements and level up!</li>
+    </ul>
+
+    <h2>SCORING</h2>
+    <ul class="score-line">
+      <li>Checkpoint scan&nbsp;&nbsp;→ <b>+500 XP</b></li>
+      <li>360° point cloud&nbsp;→ <b>+1500 XP</b></li>
+      <li>Complete a run&nbsp;&nbsp;→ <b>+800 XP</b></li>
+      <li>Speed-run bonus&nbsp;&nbsp;→ <b>+1000 XP</b> (under 5 min)</li>
+    </ul>
+
+    <h2>MANUAL MODE (WASD)</h2>
+    <ul>
+      <li><b>R</b> key = manual 360° scan → checkpoint XP</li>
+      <li><b>T</b> key = build point cloud → <b>+1500 XP</b></li>
+    </ul>
+
+    <button id="introStart" onclick="closeHelp()">GOT IT — START EXPLORING</button>
+  </div>
+</div>
+
+<!-- ── TOP BAR ──────────────────────────────────── -->
+<div id="topbar">
+  <button id="helpBtn" title="How to play" onclick="openHelp()">?</button>
+  <div class="title">🗺 ROBO EXPLORER</div>
+
+  <div class="top-stat score">
+    <span class="label">Score</span>
+    <span class="value" id="scoreVal">0</span>
+  </div>
+  <div class="top-stat level">
+    <span class="label">Level</span>
+    <span class="value" id="levelVal">0</span>
+  </div>
+  <div class="top-stat">
+    <span class="label">Checkpoints</span>
+    <span class="value" id="cpVal">0</span>
+  </div>
+  <div class="top-stat">
+    <span class="label">Clouds</span>
+    <span class="value" id="cloudsVal">0</span>
+  </div>
+  <div class="top-stat timer">
+    <span class="label">Run Time</span>
+    <span class="value" id="timerVal">--:--</span>
+  </div>
+
+  <div id="xpBarWrap">
+    <div class="label">XP — <span id="xpCurrent">0</span> / <span id="xpNext">500</span></div>
+    <div id="xpBarBg"><div id="xpBarFill"></div></div>
+    <div id="xpText">Level <span id="xpLevel">0</span></div>
+  </div>
+
+  <div id="statusBadge" class="idle">● IDLE</div>
+</div>
+
+<!-- ── MAIN ─────────────────────────────────────── -->
+<div id="main">
+
+  <!-- LEFT -->
+  <div id="leftCol">
+    <div class="panel">
+      <div class="panel-title">Fog of War Map</div>
+      <canvas id="mapCanvas" width="400" height="300"></canvas>
+    </div>
+    <div class="panel" id="cameraPanel">
+      <div class="panel-title">Explorer View</div>
+      <div id="cameraFeed">
+        <img id="camImg" src="" alt="" style="display:none">
+        <span id="camPlaceholder" style="color:#333;font-size:13px;">No camera stream</span>
+        <div id="cameraOverlay"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT -->
+  <div id="rightCol">
+
+    <!-- stat bars -->
+    <div id="barsRow">
+      <div class="stat-bar-panel">
+        <div class="bar-label">Battery <span id="battPct">--%</span></div>
+        <div class="bar-bg"><div class="bar-fill battery" id="battBar" style="width:0%"></div></div>
+      </div>
+      <div class="stat-bar-panel">
+        <div class="bar-label">Map Explored <span id="mapPct">0%</span></div>
+        <div class="bar-bg"><div class="bar-fill explore" id="mapBar" style="width:0%"></div></div>
+      </div>
+      <div class="stat-bar-panel">
+        <div class="bar-label">Scan Progress <span id="scanPct">0/0</span></div>
+        <div class="bar-bg"><div class="bar-fill scan" id="scanBar" style="width:0%"></div></div>
+      </div>
+    </div>
+
+    <!-- checkpoints -->
+    <div class="panel" id="checkpointsPanel">
+      <div class="panel-title">Checkpoints — Current Run</div>
+      <div id="checkpointDots"></div>
+    </div>
+
+    <!-- achievements -->
+    <div class="panel" id="achievementsPanel">
+      <div class="panel-title">Achievements</div>
+      <div id="achievementsList"></div>
+    </div>
+
+    <!-- run history -->
+    <div class="panel" id="historyPanel">
+      <div class="panel-title">Run History</div>
+      <table id="historyTable">
+        <thead>
+          <tr>
+            <th>Date</th><th>Checkpoints</th><th>Clouds</th><th>Time</th><th class="xp-col">XP</th>
+          </tr>
+        </thead>
+        <tbody id="historyBody"></tbody>
+      </table>
+    </div>
+
+  </div>
+</div>
+
+<!-- config bar -->
+<div id="configBar">
+  Control server:
+  <input id="serverInput" type="text" value="localhost:8765" placeholder="IP:port">
+  Camera stream:
+  <input id="streamInput" type="text" value="localhost:8554" placeholder="IP:port">
+  <button onclick="applyConfig()">Connect</button>
+  <span class="cfg-sep">|</span>
+  <span id="connStatus" style="color:#ef9a9a">● Disconnected</span>
+  <span class="cfg-sep" style="margin-left:auto">Press F11 for fullscreen</span>
+</div>
+
+<!-- popups -->
+<div id="achievementPopup">
+  <div id="popupIcon">🏆</div>
+  <div id="popupType">Achievement Unlocked</div>
+  <div id="popupTitle">Title</div>
+  <div id="popupDesc">Description</div>
+  <div id="popupXP">+0 XP</div>
+  <div id="popupBar"></div>
+</div>
+
+<!-- danger effects -->
+<div id="dangerOverlay"></div>
+<div id="dangerText">
+  <h1>⚠ DANGER ⚠</h1>
+  <p id="dangerDist"></p>
+</div>
+
+<script>
+// ── config ──────────────────────────────────────────────────────────────────
+const cfg = {
+  controlServer: 'localhost:8765',
+  streamServer:  'localhost:8554',
+};
+
+// ── fog-of-war map renderer ─────────────────────────────────────────────────
+const GRID_W = 30, GRID_H = 30;
+const canvas = document.getElementById('mapCanvas');
+const ctx    = canvas.getContext('2d');
+canvas.width  = GRID_W * 14;
+canvas.height = GRID_H * 10;
+
+// all achievements definition (mirrors Python)
+const ALL_ACHIEVEMENTS = {
+  first_discovery:       { title:'First Discovery',        desc:'Complete your first checkpoint scan',   icon:'🥇', xp:200  },
+  spin_master:           { title:'360° Master',            desc:'Complete a full 360° rotation scan',    icon:'🌀', xp:500  },
+  cartographer:          { title:'Cartographer',           desc:'Reveal 80% of the fog-of-war map',      icon:'🗺', xp:1000 },
+  speed_runner:          { title:'Speed Runner',           desc:'Complete a full run in under 5 minutes',icon:'⚡', xp:1000 },
+  deep_scanner:          { title:'Deep Scanner',           desc:'Complete 5 checkpoint scans in one run',icon:'🔭', xp:750  },
+  autonomous:            { title:'Fully Autonomous',       desc:'Full run without manual override',      icon:'🤖', xp:1200 },
+  point_cloud_collector: { title:'Point Cloud Collector',  desc:'Build 3 point clouds in total',         icon:'☁️', xp:600  },
+  explorer_lvl5:         { title:'Elite Explorer',         desc:'Reach level 5',                         icon:'🏆', xp:2000 },
+};
+
+let state = null;
+let prevScore = 0;
+let popupQueue = [];
+let popupShowing = false;
+let connected = false;
+
+// ── fog map drawing ─────────────────────────────────────────────────────────
+function drawMap(fogGrid, robotX, robotY, robotHeading) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const cw = canvas.width  / GRID_W;
+  const ch = canvas.height / GRID_H;
+
+  for (let y = 0; y < GRID_H; y++) {
+    for (let x = 0; x < GRID_W; x++) {
+      const revealed = fogGrid[y * GRID_W + x];
+      if (!revealed) {
+        ctx.fillStyle = '#040608';
+        ctx.fillRect(x*cw, y*ch, cw, ch);
+        // subtle grid
+        ctx.strokeStyle = '#0a0e14';
+        ctx.lineWidth = 0.5;
+        ctx.strokeRect(x*cw, y*ch, cw, ch);
+      } else {
+        // terrain gradient based on distance from center
+        const dx = x - GRID_W/2, dy = y - GRID_H/2;
+        const d  = Math.sqrt(dx*dx + dy*dy) / (GRID_W/2);
+        const g  = Math.round(20 + d * 12);
+        ctx.fillStyle = `rgb(${g},${g+4},${g+2})`;
+        ctx.fillRect(x*cw, y*ch, cw, ch);
+        // grid lines
+        ctx.strokeStyle = '#1a2030';
+        ctx.lineWidth = 0.3;
+        ctx.strokeRect(x*cw, y*ch, cw, ch);
+      }
+    }
+  }
+
+  // draw tape path hint (dim line where robot has been)
+  ctx.strokeStyle = '#1a3a2a';
+  ctx.lineWidth = 2;
+  // just a visual embellishment — draw a faint center cross
+  ctx.setLineDash([3,5]);
+  ctx.beginPath();
+  ctx.moveTo(canvas.width/2, 0);
+  ctx.lineTo(canvas.width/2, canvas.height);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(0, canvas.height/2);
+  ctx.lineTo(canvas.width, canvas.height/2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // robot marker
+  const rx = (robotX + 0.5) * cw;
+  const ry = (robotY + 0.5) * ch;
+  const r  = Math.min(cw, ch) * 0.55;
+
+  // glow
+  const grd = ctx.createRadialGradient(rx, ry, 0, rx, ry, r*2.5);
+  grd.addColorStop(0, 'rgba(100,220,255,0.3)');
+  grd.addColorStop(1, 'rgba(100,220,255,0)');
+  ctx.fillStyle = grd;
+  ctx.beginPath();
+  ctx.arc(rx, ry, r*2.5, 0, Math.PI*2);
+  ctx.fill();
+
+  // robot body
+  ctx.save();
+  ctx.translate(rx, ry);
+  ctx.rotate((robotHeading || 0) * Math.PI / 180);
+
+  ctx.fillStyle = '#4fc3f7';
+  ctx.shadowColor = '#4fc3f7';
+  ctx.shadowBlur = 8;
+  ctx.beginPath();
+  ctx.moveTo(0, -r);        // front tip
+  ctx.lineTo(-r*0.7, r*0.7);
+  ctx.lineTo(r*0.7, r*0.7);
+  ctx.closePath();
+  ctx.fill();
+
+  // direction dot
+  ctx.fillStyle = '#fff';
+  ctx.shadowBlur = 0;
+  ctx.beginPath();
+  ctx.arc(0, -r*0.4, r*0.2, 0, Math.PI*2);
+  ctx.fill();
+
+  ctx.restore();
+
+  // legend
+  ctx.fillStyle = '#2a3a4a';
+  ctx.fillRect(0, canvas.height - 20, canvas.width, 20);
+  ctx.fillStyle = '#4fc3f7';
+  ctx.font = '9px monospace';
+  ctx.fillText(`Robot @ (${robotX},${robotY})  Heading: ${Math.round(robotHeading||0)}°`, 6, canvas.height - 6);
+}
+
+// ── UI update ───────────────────────────────────────────────────────────────
+function updateUI(s) {
+  // top bar
+  animateNumber('scoreVal',  s.score  || 0);
+  document.getElementById('levelVal').textContent  = s.level  || 0;
+  document.getElementById('cpVal').textContent     = s.current_run_checkpoints || 0;
+  document.getElementById('cloudsVal').textContent = s.current_run_clouds      || 0;
+
+  // timer
+  const el = s.elapsed_s || 0;
+  const mm = String(Math.floor(el/60)).padStart(2,'0');
+  const ss = String(el % 60).padStart(2,'0');
+  document.getElementById('timerVal').textContent = s.run_active ? `${mm}:${ss}` : '--:--';
+
+  // XP bar
+  const xpCur  = s.total_xp || 0;
+  const xpNext = s.xp_next_level || 500;
+  const xpPrev = s.level > 0 ? [0,500,1500,3500,7000,12000,20000,30000,45000,65000,90000][s.level] : 0;
+  const pct = xpNext > xpPrev ? Math.round((xpCur - xpPrev) / (xpNext - xpPrev) * 100) : 100;
+  document.getElementById('xpBarFill').style.width = pct + '%';
+  document.getElementById('xpCurrent').textContent = xpCur.toLocaleString();
+  document.getElementById('xpNext').textContent    = xpNext.toLocaleString();
+  document.getElementById('xpLevel').textContent   = s.level || 0;
+
+  // status badge
+  const badge = document.getElementById('statusBadge');
+  if (s.run_active) {
+    badge.textContent = '● SCANNING';
+    badge.className   = 'scanning';
+  } else {
+    badge.textContent = '● IDLE';
+    badge.className   = 'idle';
+  }
+
+  // stat bars
+  document.getElementById('battPct').textContent  = '--';
+  document.getElementById('battBar').style.width  = '70%'; // placeholder
+  const mapPct = s.map_pct || 0;
+  document.getElementById('mapPct').textContent   = mapPct + '%';
+  document.getElementById('mapBar').style.width   = mapPct + '%';
+  const cp = s.current_run_checkpoints || 0;
+  document.getElementById('scanPct').textContent  = `${cp}/5`;
+  document.getElementById('scanBar').style.width  = Math.min(cp/5*100, 100) + '%';
+
+  // checkpoint dots
+  const dotsEl = document.getElementById('checkpointDots');
+  const maxDots = Math.max(5, cp + 1);
+  dotsEl.innerHTML = '';
+  for (let i = 1; i <= maxDots; i++) {
+    const d = document.createElement('div');
+    d.className = 'cp-dot' + (i < cp ? ' done' : i === cp && cp > 0 ? ' done' : '');
+    if (i === cp && s.run_active) d.className = 'cp-dot current';
+    d.textContent = i <= cp ? '✓' : i;
+    dotsEl.appendChild(d);
+  }
+
+  // fog map
+  if (s.fog_grid && s.fog_grid.length) {
+    drawMap(s.fog_grid, s.robot_x, s.robot_y, s.robot_heading);
+  }
+
+  // achievements
+  renderAchievements(s.unlocked_achievements || {});
+
+  // run history
+  renderHistory(s.run_history || []);
+
+  // handle pending achievements/level-ups
+  if (s.pending_achievements && s.pending_achievements.length) {
+    s.pending_achievements.forEach(a => popupQueue.push(a));
+    flushPopups();
+  }
+}
+
+function animateNumber(id, target) {
+  const el = document.getElementById(id);
+  const cur = parseInt(el.textContent.replace(/,/g,'')) || 0;
+  if (cur === target) return;
+  const step = Math.max(1, Math.round(Math.abs(target - cur) / 20));
+  const dir  = target > cur ? 1 : -1;
+  let val = cur;
+  const iv = setInterval(() => {
+    val += step * dir;
+    if ((dir > 0 && val >= target) || (dir < 0 && val <= target)) {
+      val = target; clearInterval(iv);
+    }
+    el.textContent = val.toLocaleString();
+  }, 30);
+}
+
+function renderAchievements(unlocked) {
+  const list = document.getElementById('achievementsList');
+  list.innerHTML = '';
+  Object.entries(ALL_ACHIEVEMENTS).forEach(([key, a]) => {
+    const isUnlocked = key in unlocked;
+    const div = document.createElement('div');
+    div.className = 'ach-item ' + (isUnlocked ? 'unlocked' : 'locked');
+    const dateStr = isUnlocked
+      ? `<span class="ach-date">${new Date(unlocked[key]).toLocaleDateString()}</span>`
+      : `<span class="ach-xp">+${a.xp} XP</span>`;
+    div.innerHTML = `
+      <span class="ach-icon">${a.icon}</span>
+      <div class="ach-info">
+        <div class="ach-title">${a.title}</div>
+        <div class="ach-desc">${a.desc}</div>
+      </div>
+      ${dateStr}
+    `;
+    list.appendChild(div);
+  });
+}
+
+function renderHistory(history) {
+  const tbody = document.getElementById('historyBody');
+  tbody.innerHTML = '';
+  [...history].reverse().slice(0, 5).forEach(r => {
+    const mm = String(Math.floor((r.duration_s||0)/60)).padStart(2,'0');
+    const ss = String((r.duration_s||0) % 60).padStart(2,'0');
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${new Date(r.date).toLocaleDateString()}</td>
+      <td>${r.checkpoints}</td>
+      <td>${r.clouds}</td>
+      <td>${mm}:${ss}</td>
+      <td class="xp-col">+${(r.xp_earned||0).toLocaleString()}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+// ── popup system ────────────────────────────────────────────────────────────
+function flushPopups() {
+  if (popupShowing || !popupQueue.length) return;
+  const a = popupQueue.shift();
+  popupShowing = true;
+  const popup = document.getElementById('achievementPopup');
+  document.getElementById('popupIcon').textContent  = a.icon  || '🏆';
+  document.getElementById('popupType').textContent  = a.type === 'level_up' ? 'Level Up!' : 'Achievement Unlocked';
+  document.getElementById('popupTitle').textContent = a.title || '';
+  document.getElementById('popupDesc').textContent  = a.desc  || '';
+
+  const xpMap = ALL_ACHIEVEMENTS[a.key];
+  document.getElementById('popupXP').textContent = xpMap ? `+${xpMap.xp} XP` : '';
+
+  // reset animation
+  const bar = document.getElementById('popupBar');
+  bar.style.animation = 'none';
+  void bar.offsetWidth;
+  bar.style.animation = 'shrink 4s linear forwards';
+
+  popup.classList.add('show');
+
+  setTimeout(() => {
+    popup.classList.remove('show');
+    setTimeout(() => { popupShowing = false; flushPopups(); }, 400);
+  }, 4000);
+}
+
+// ── polling ──────────────────────────────────────────────────────────────────
+async function poll() {
+  try {
+    const r = await fetch(`http://${cfg.controlServer}/api/game/state`);
+    if (!r.ok) throw new Error('bad status');
+    const s = await r.json();
+    state = s;
+    updateUI(s);
+    if (!connected) {
+      connected = true;
+      document.getElementById('connStatus').textContent = '● Connected';
+      document.getElementById('connStatus').style.color = '#81c784';
+    }
+  } catch {
+    if (connected) {
+      connected = false;
+      document.getElementById('connStatus').textContent = '● Disconnected';
+      document.getElementById('connStatus').style.color = '#ef9a9a';
+    }
+  }
+}
+
+// ── camera stream ────────────────────────────────────────────────────────────
+function connectStream(url) {
+  const img = document.getElementById('camImg');
+  const ph  = document.getElementById('camPlaceholder');
+  img.src = url;
+  img.style.display = 'block';
+  ph.style.display  = 'none';
+  img.onerror = () => { img.style.display='none'; ph.style.display='flex'; };
+}
+
+// ── config ───────────────────────────────────────────────────────────────────
+function applyConfig() {
+  cfg.controlServer = document.getElementById('serverInput').value.trim();
+  cfg.streamServer  = document.getElementById('streamInput').value.trim();
+  connectStream(`http://${cfg.streamServer}/stream.mjpg`);
+  poll();
+}
+
+// ── intro / explanation modal ────────────────────────────────────────────────
+let helpSeen = false;   // shows once per session
+function openHelp()  { document.getElementById('introOverlay').classList.remove('hidden'); }
+function closeHelp() { document.getElementById('introOverlay').classList.add('hidden'); helpSeen = true; }
+// show the explanation on first load
+if (!helpSeen) openHelp();
+// allow ESC to dismiss
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeHelp(); });
+
+// ── init ─────────────────────────────────────────────────────────────────────
+// Draw empty map immediately
+drawMap(new Array(GRID_W * GRID_H).fill(false), GRID_W>>1, GRID_H>>1, 0);
+
+// start polling every 1s
+setInterval(poll, 1000);
+poll();
+
+// demo mode — show something nice when not connected
+setTimeout(() => {
+  if (!connected) {
+    const demoFog = new Array(GRID_W * GRID_H).fill(false);
+    // reveal a small area in center for demo
+    for(let dy=-4; dy<=4; dy++) for(let dx=-4; dx<=4; dx++) {
+      if(dx*dx+dy*dy<=16) {
+        const x=(GRID_W>>1)+dx, y=(GRID_H>>1)+dy;
+        if(x>=0&&x<GRID_W&&y>=0&&y<GRID_H) demoFog[y*GRID_W+x]=true;
+      }
+    }
+    drawMap(demoFog, GRID_W>>1, GRID_H>>1, 45);
+    renderAchievements({});
+  }
+}, 500);
+</script>
+</body>
+</html>

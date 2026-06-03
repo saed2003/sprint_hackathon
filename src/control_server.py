@@ -524,6 +524,14 @@ class ControlHandler(BaseHTTPRequestHandler):
         elif path == "/api/cloud/download":
             self.send_cloud()
 
+        elif path == "/api/game/state":
+            # ── GAME: return current game state ───────────────────────────
+            try:
+                from game.game_engine import GameEngine
+                self.send_json(200, GameEngine.instance().get_state())
+            except Exception as e:
+                self.send_json(200, {"error": str(e)})
+
         elif path == "/":
             self.send_html(200, self.get_landing_page())
 
@@ -573,6 +581,25 @@ class ControlHandler(BaseHTTPRequestHandler):
         elif path == "/api/servo":
             body = self.read_json()
             self.send_json(200, servo(body.get("axis"), body.get("delta", 0)))
+
+        elif path == "/api/game/event":
+            # ── GAME: receive event from external source ───────────────────
+            try:
+                from game.game_engine import GameEngine
+                body = self.read_json()
+                GameEngine.instance().handle_event(body)
+                self.send_json(200, {"ok": True})
+            except Exception as e:
+                self.send_json(400, {"error": str(e)})
+
+        elif path == "/api/game/reset":
+            # ── GAME: reset current run (keep XP/achievements) ─────────────
+            try:
+                from game.game_engine import GameEngine
+                GameEngine.instance().reset_run()
+                self.send_json(200, {"ok": True})
+            except Exception as e:
+                self.send_json(400, {"error": str(e)})
 
         else:
             self.send_json(404, {"error": "Not found"})
@@ -635,6 +662,7 @@ class ControlHandler(BaseHTTPRequestHandler):
         """Send HTML response."""
         self.send_response(code)
         self.send_header("Content-type", "text/html")
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(html.encode())
 
