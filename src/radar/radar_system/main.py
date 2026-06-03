@@ -206,7 +206,7 @@ class RadarApp:
             res = self.filter.read(raw, angle=bearing)
             self.sync.mark_read()
 
-            if res["valid"] and res["zone"] != "CLEAR":
+            if res["valid"]:
                 self._sweep_hits[round(bearing)] = res["distance"]
             else:
                 self._sweep_hits.pop(round(bearing), None)
