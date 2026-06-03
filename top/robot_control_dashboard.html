@@ -625,6 +625,7 @@
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/jsmpeg@0.2.0/jsmpeg.min.js"></script>
     <script>
         // Configuration state
         // Default the control/stream servers to the SAME host the dashboard was
@@ -767,6 +768,12 @@
             disconnectBtn.classList.add('btn-disabled');
             updateStreamStatus('🔄 Stopping stream...', '#ff9800', false);
 
+            // Stop the JSMpeg player if it exists
+            if (window.currentPlayer) {
+                window.currentPlayer.stop();
+                window.currentPlayer = null;
+            }
+
             const controlUrl = `http://${config.controlServer}/api/stream/stop`;
             fetch(controlUrl, { method: 'POST' })
                 .then(r => r.json())
@@ -802,22 +809,26 @@
             const streamContainer = document.getElementById('streamContainer');
             state.streamUrl = streamUrl;
 
-            const imgElement = document.createElement('img');
-            imgElement.src = streamUrl;
-            imgElement.style.width = '100%';
-            imgElement.style.height = '100%';
-            imgElement.style.objectFit = 'contain';
+            streamContainer.innerHTML = '<canvas id="mjpegCanvas" style="width: 100%; height: 100%; display: block;"></canvas>';
+            const canvas = document.getElementById('mjpegCanvas');
 
-            imgElement.onerror = () => {
-                updateStreamStatus('✗ Stream connection failed', '#f44336', false);
-            };
+            try {
+                const player = new JSMpeg.Player(streamUrl, {
+                    canvas: canvas,
+                    onplay: () => {
+                        updateStreamStatus('✓ Stream active', '#4caf50', true);
+                    },
+                    onerror: (error) => {
+                        updateStreamStatus('✗ Stream connection failed', '#f44336', false);
+                    }
+                });
 
-            imgElement.onload = () => {
-                updateStreamStatus('✓ Stream active', '#4caf50', true);
-            };
-
-            streamContainer.innerHTML = '';
-            streamContainer.appendChild(imgElement);
+                // Keep a reference so we can stop it later
+                window.currentPlayer = player;
+            } catch (e) {
+                console.error('JSMpeg initialization error:', e);
+                updateStreamStatus('✗ Stream error: ' + e.message, '#f44336', false);
+            }
         }
 
         // ── Run control (ON/OFF) + driving ──────────────────────────────
