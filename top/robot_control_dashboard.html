@@ -562,9 +562,10 @@
                         <div class="key action" data-key="v" onclick="captureSingle()">V<br><span style="font-size: 9px;">Capture</span></div>
                     </div>
 
-                    <!-- Point cloud: build + download -->
+                    <!-- Point cloud: build + view + download -->
                     <div class="key-row" style="margin-top: 5px;">
                         <div class="key action" data-key="t" onclick="captureBuild()">T<br><span style="font-size: 9px;">Build Cloud</span></div>
+                        <div class="key action" id="view3dKey" onclick="viewCloud()">👁<br><span style="font-size: 9px;">View 3D</span></div>
                         <div class="key action" id="downloadKey" onclick="downloadCloud()">⬇<br><span style="font-size: 9px;">Download</span></div>
                     </div>
 
@@ -917,8 +918,8 @@
         // ── Captures (R = 360° scan, V = single) ────────────────────────
         function captureScan360() {
             if (!confirm('360° scan will ROTATE the robot a full turn in place.\nMake sure it has room. Continue?')) return;
-            // One button: spin → 10 shots → build .ply. The Pi pops view_ply.py,
-            // and the browser offers the file for download once it's ready.
+            // One button: spin → 10 shots → build .ply → open the 3D view in a new
+            // tab (the Pi also pops view_ply.py; ⬇ Download stays available too).
             postCapture('scan', '360° scan + build', true);
         }
 
@@ -957,13 +958,13 @@
             .catch(() => {});
         }
 
-        function postCapture(kind, label, autoDownload) {
+        function postCapture(kind, label, viewOnDone) {
             updateRunStatus('🔄 ' + label + ' started...', false);
             fetch(`${controlBase()}/api/capture/${kind}`, { method: 'POST' })
                 .then(r => r.json())
                 .then(data => {
                     if (data.status === 'started') {
-                        pollCapture(!!autoDownload);
+                        pollCapture(!!viewOnDone);
                     } else if (data.status === 'busy') {
                         updateRunStatus('⚠ ' + data.message, false);
                     } else {
@@ -973,17 +974,17 @@
                 .catch(() => updateRunStatus('✗ Control server not reachable', false));
         }
 
-        function pollCapture(autoDownload) {
+        function pollCapture(viewOnDone) {
             fetch(`${controlBase()}/api/capture/status`)
                 .then(r => r.json())
                 .then(data => {
                     updateRunStatus((data.busy ? '⏳ ' : '✓ ') + data.status, false);
                     if (data.busy) {
-                        setTimeout(() => pollCapture(autoDownload), 800);
+                        setTimeout(() => pollCapture(viewOnDone), 800);
                     } else {
-                        // Build finished: when this flow produced a cloud, hand it to
-                        // the browser so the operator can save it to their laptop.
-                        if (autoDownload) autoDownloadCloud();
+                        // Build finished: when this flow produced a cloud, open the
+                        // interactive 3D view in a new tab (download stays available).
+                        if (viewOnDone) onCloudReady();
                         if (state.runActive) {
                             // restore the running banner once the capture finishes
                             setTimeout(() => updateRunStatus(`● RUNNING — speed ${state.speed}`, true), 2500);
@@ -993,16 +994,35 @@
                 .catch(() => {});
         }
 
-        // Pop the browser's download dialog for the freshly built .ply (the Pi
-        // separately opens view_ply.py in an interactive 3D window).
-        function autoDownloadCloud() {
+        // The viewer page is served by the dashboard's OWN static server; pass it
+        // the control API host so it can fetch the .ply (handles a custom IP too).
+        function cloudViewerUrl() {
+            return `cloud_viewer.html?api=${encodeURIComponent(config.controlServer)}`;
+        }
+
+        // Open the interactive WebGL cloud in a NEW TAB. Called from a click, so
+        // the browser treats it as a user gesture and won't block the popup.
+        function viewCloud() {
             fetch(`${controlBase()}/api/cloud/status`)
                 .then(r => r.json())
                 .then(d => {
-                    if (d.has_cloud) {
-                        updateRunStatus('⬇ Cloud ready — downloading ' + d.name, false);
-                        window.location.href = `${controlBase()}/api/cloud/download`;
-                    }
+                    if (d.has_cloud) window.open(cloudViewerUrl(), '_blank');
+                    else updateRunStatus('⚠ No cloud yet — Scan (R) then Build (T)', false);
+                })
+                .catch(() => updateRunStatus('✗ Control server not reachable', false));
+        }
+
+        // When a fresh .ply finishes, try to open the 3D viewer in a new tab.
+        // Auto-open from a poll callback may be blocked (not a user gesture); if
+        // so, leave a clear hint to use the 👁 View 3D button.
+        function onCloudReady() {
+            fetch(`${controlBase()}/api/cloud/status`)
+                .then(r => r.json())
+                .then(d => {
+                    if (!d.has_cloud) return;
+                    const w = window.open(cloudViewerUrl(), '_blank');
+                    if (w) updateRunStatus('✓ ' + d.name + ' — opened 3D view in a new tab', false);
+                    else   updateRunStatus('✓ ' + d.name + ' ready — click 👁 View 3D (or ⬇ Download)', false);
                 })
                 .catch(() => {});
         }
