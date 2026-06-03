@@ -37,15 +37,19 @@ from setup_and_api.api import RasBot
 # ═══════════════════════════════════════════════════════════════════
 #  TUNING  — only change values in this block
 # ═══════════════════════════════════════════════════════════════════
-CRUISE_SPEED  = 130    # straight-line speed (fast). raise for more speed
-MIN_SPEED     = 70     # slowest allowed mid-turn (brake floor)
-Kp            = 22     # proportional gain — sharper turns if raised
+CRUISE_SPEED  = 150    # straight-line speed (fast). raise for more speed
+CURVE_SPEED   = 95     # speed while leaning into a curve (|err|>=2) — slows BEFORE the corner
+SLIGHT_SPEED  = 125    # speed on a slight drift (|err|=1) — ease off a touch
+MIN_SPEED     = 65     # slowest allowed mid-turn (brake floor)
+Kp            = 24     # proportional gain — sharper turns if raised
 Kd            = 14     # derivative gain — damps wobble/overshoot
-BRAKE_K       = 0.45   # auto-brake strength: speed drops as correction grows
-SMOOTH        = 0.30   # motor EMA: 0.15=silky, 0.30=balanced, 0.5=snappy
-PIVOT_FWD     = 115    # outer-wheel speed during a hard corner pivot
-PIVOT_REV     = -55    # inner-wheel speed during a hard corner pivot (spins it round)
-PIVOT_LATCH   = 45     # max ticks to COMMIT to a sharp turn (~0.36s) — fixes missed turns
+BRAKE_K       = 0.55   # auto-brake strength: speed drops as correction grows
+SMOOTH        = 0.35   # motor EMA: 0.15=silky, 0.35=balanced, 0.5=snappy
+PIVOT_FWD     = 125    # outer-wheel speed during a hard corner pivot
+PIVOT_REV     = -75    # inner-wheel speed during a hard corner pivot (spins it round)
+PIVOT_LATCH   = 50     # max ticks to COMMIT to a sharp turn (~0.4s) — fixes missed turns
+BRAKE_PULSE   = 3      # ticks of hard brake when ENTERING a sharp turn — kills momentum
+BRAKE_SPEED   = -90    # reverse speed during the brake pulse (both wheels)
 JUNCTION_DIR  = +1     # which way to go at a true cross/T-junction: +1 = RIGHT, -1 = LEFT
 LOST_SPEED    = 95     # in-place spin speed when hunting a lost line
 DEBOUNCE      = 2      # consecutive all-off reads before declaring "lost"
@@ -116,39 +120,54 @@ class _Follower:
         self.lost_ticks = 0      # debounce counter for all-off
         self.latch_ticks = 0     # >0 while COMMITTED to a sharp turn / junction
         self.latch_dir = 0       # which way we're committed: +1 right, -1 left
+        self.brake_ticks = 0     # >0 while killing forward momentum into a turn
 
-    def _pivot(self, bot, direction):
-        """Hard in-place pivot toward `direction` (+1 right / -1 left)."""
-        if direction < 0:
-            self._snap(bot, PIVOT_REV, PIVOT_FWD)    # pivot LEFT
+    def _arm_turn(self, direction):
+        """Begin committing to a sharp turn / junction toward `direction`.
+
+        If we're carrying real forward speed, queue a brief brake pulse first
+        so the pivot rotates in place instead of arcing past the line.
+        """
+        self.latch_dir = direction
+        self.latch_ticks = PIVOT_LATCH
+        fwd = (self.actual_L + self.actual_R) / 2.0
+        self.brake_ticks = BRAKE_PULSE if fwd > 100 else 0
+
+    def _drive_turn(self, bot):
+        """Execute the committed turn: brake-pulse to kill momentum, then pivot."""
+        if self.brake_ticks > 0:
+            self.brake_ticks -= 1
+            self._snap(bot, BRAKE_SPEED, BRAKE_SPEED)     # both wheels reverse — kill speed
+        elif self.latch_dir < 0:
+            self._snap(bot, PIVOT_REV, PIVOT_FWD)         # pivot LEFT
         else:
-            self._snap(bot, PIVOT_FWD, PIVOT_REV)    # pivot RIGHT
+            self._snap(bot, PIVOT_FWD, PIVOT_REV)         # pivot RIGHT
 
     def step(self, bot):
         L1, L2, R1, R2 = bot.read_line_sensors()
         count = int(L1) + int(L2) + int(R1) + int(R2)
 
+        # ── ALREADY COMMITTED TO A TURN: finish it before anything else ─
+        # Keep turning until the line is centred again under the inner
+        # sensors. This is what stops "almost made it" misses.
+        if self.latch_ticks > 0:
+            raw = _read_pattern(L1, L2, R1, R2)
+            reacquired = (count < 3 and raw is not None and abs(raw) <= E_INNER)
+            if reacquired:
+                self.latch_ticks = 0          # turn complete → fall through to tracking
+            else:
+                self.latch_ticks -= 1
+                self._drive_turn(bot)
+                return
+
         # ── JUNCTION / CROSS: 3-4 sensors on → commit to a branch fast ──
         if count >= 3:
-            self.latch_dir = _junction_dir(L1, L2, R1, R2, count)
-            self.latch_ticks = PIVOT_LATCH
+            self._arm_turn(_junction_dir(L1, L2, R1, R2, count))
             self.last_error = float(self.latch_dir) * E_OUTER
-            self._pivot(bot, self.latch_dir)
+            self._drive_turn(bot)
             return
 
         raw = _read_pattern(L1, L2, R1, R2)
-
-        # ── COMMITTED TURN: keep pivoting until the line re-centres ─────
-        # This is what stops "almost made it" misses — the robot finishes
-        # the turn through the brief all-off zone instead of giving up.
-        if self.latch_ticks > 0:
-            reacquired = (raw is not None and abs(raw) <= E_INNER)
-            if reacquired:
-                self.latch_ticks = 0          # turn complete → resume tracking
-            else:
-                self.latch_ticks -= 1
-                self._pivot(bot, self.latch_dir)
-                return
 
         # ── lost-line handling with debounce ───────────────────────────
         if raw is None:
@@ -175,18 +194,23 @@ class _Follower:
         self.last_error = error                  # remember real readings only
 
         # ── SHARP CORNER (outer sensor only) → arm the commit latch ────
-        # Snap into the pivot AND latch it so the turn completes even if the
-        # sensors go blank mid-rotation.
         if abs(error) >= E_OUTER:
-            self.latch_dir = 1 if error > 0 else -1
-            self.latch_ticks = PIVOT_LATCH
-            self._pivot(bot, self.latch_dir)
+            self._arm_turn(1 if error > 0 else -1)
+            self._drive_turn(bot)
             return
 
-        # ── normal tracking with predictive braking ───────────────────
-        # The bigger the correction, the more we slow down → no overshoot,
-        # full speed returns automatically on the straight.
-        speed = max(MIN_SPEED, CRUISE_SPEED - abs(correction) * BRAKE_K)
+        # ── normal tracking with tiered speed + predictive braking ─────
+        # Brake the instant we leave dead-centre so we're ALREADY slow by
+        # the time the sharp part arrives. Full speed returns on the straight.
+        ae = abs(error)
+        if ae == 0:
+            base = CRUISE_SPEED          # dead straight → full speed
+        elif ae <= E_INNER:
+            base = SLIGHT_SPEED          # slight drift → ease off
+        else:
+            base = CURVE_SPEED           # leaning into a curve → slow for the corner
+
+        speed = max(MIN_SPEED, base - abs(correction) * BRAKE_K)
         target_L = speed + correction
         target_R = speed - correction
 
