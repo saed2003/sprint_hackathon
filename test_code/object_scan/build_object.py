@@ -80,26 +80,17 @@ def object_center(pcd):
     return np.median(np.asarray(pcd.points), axis=0)
 
 
-def estimate_rotation_axis(pcds, angles, log=print, iters=3):
+def estimate_rotation_axis(pcds, angles=None, log=print, iters=3):
     """Find the (x,z) of the vertical rotation axis through the OBJECT CENTRE.
 
-    A single view only sees the object's front surface, so its centroid sits too
-    close to the camera — pivoting there tilts every rotated view and smears the
-    model. We bootstrap: start the axis one lateral-radius BEHIND view-0's front
-    surface, do a prior-only merge, then take that all-around cloud's centroid as a
-    better axis, and repeat. Converges to the true centre in 2-3 passes.
+    The object stays in ~the same place in the camera frame across views (turntable:
+    the camera is fixed and the object spins in place; orbit: the camera re-aims at it),
+    so the axis is simply the MEDIAN of each view's centroid. Robust and cheap. (An
+    earlier bootstrap that pre-merged with the angle prior could run the axis away when
+    the prior was even slightly off — that produced the 80 cm blow-ups.)
     """
-    p0 = np.asarray(pcds[0].points)
-    center = np.median(p0, axis=0)
-    radius = 0.5 * max(np.ptp(p0[:, 0]), np.ptp(p0[:, 1]))   # object half-size estimate
-    center[2] += radius                                       # push axis back off the front face
-    for _ in range(iters):
-        rough = o3d.geometry.PointCloud()
-        for pcd, ang in zip(pcds, angles):
-            q = o3d.geometry.PointCloud(pcd)
-            q.transform(ry_about(center, ang))
-            rough += q
-        center = np.median(np.asarray(rough.points), axis=0)
+    cents = np.array([np.median(np.asarray(p.points), axis=0) for p in pcds])
+    center = np.median(cents, axis=0)
     log(f"  rotation axis (x,z) = ({center[0]:.3f}, {center[2]:.3f}) m")
     return center
 
