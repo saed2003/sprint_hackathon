@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(systemctl list-unit-files *)",
+      "Bash(systemctl list-units *)",
+      "Bash(journalctl -u rasbot-control.service --no-pager -n 40)",
+      "Bash(sudo -S systemctl daemon-reload)",
+      "Bash(sudo -S systemctl restart rasbot-control.service)",
+      "Bash(sudo -S systemctl restart robot-dashboard.service)",
+      "Bash(timeout 10 bash -c 'until ss -tln 2>/dev/null | grep -q \":80 \"; do sleep 0.5; done')",
+      "Bash(curl -s -m 5 -o /dev/null -w \"GET http://127.0.0.1/  -> HTTP %{http_code}\\\\n\" http://127.0.0.1:80/)"
+    ]
+  }
+}
