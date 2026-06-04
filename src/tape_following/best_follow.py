@@ -40,11 +40,21 @@ SMOOTH         = 0.35   # motor EMA smoothing (0.15 silky -> 0.5 snappy)
 # Turns
 PIVOT_FWD      = 130    # outer wheel during a pivot
 PIVOT_REV      = -85    # inner wheel during a pivot (negative = reverse)
-PIVOT_LATCH    = 70     # ticks committed to a turn (70 x 8ms ~= 0.56 s)
+PIVOT_LATCH    = 22     # MAX ticks committed to a turn (22 x 8ms ~= 0.18 s). Short
+                        # on purpose: the reacquire check ends the turn the instant
+                        # the inner sensors re-center, so this is only a ceiling that
+                        # bounds overshoot. (Was 70 = 0.56 s of blind spin → the
+                        # robot sailed clean off the line; see last_run.log ticks
+                        # 230-293 where one turn went [0111]→[1111]→[0000].)
 BRAKE_PULSE    = 4      # reverse ticks on turn ENTRY to kill momentum (anti-miss)
 BRAKE_SPEED    = -100   # both-wheel speed during the brake pulse
-RECOVERY_LOCK  = 25     # ticks ignoring opposite outer sensor after a turn
+RECOVERY_LOCK  = 15     # ticks ignoring opposite outer sensor after a turn
 JUNCTION_DIR   = +1     # fork/cross choice: +1 = RIGHT, -1 = LEFT  (pick & go)
+JUNCTION_CONFIRM = 3    # consecutive 3+-sensor ticks required before we BELIEVE a
+                        # junction is real. A 1-2 tick 3-sensor blip is just the
+                        # chassis crossing the tape at an angle during a wobble —
+                        # steer through it with PD, do NOT commit a pivot. (This is
+                        # what caused the endless false FORK(L)/FORK(R) limit cycle.)
 
 # Lost line
 LOST_SPEED     = 110    # in-place spin speed while searching for the line
@@ -127,6 +137,7 @@ class _Follower:
         self.latch_ticks    = 0
         self.latch_dir      = 0
         self.brake_ticks    = 0
+        self.junc_count     = 0      # consecutive 3+-sensor ticks (junction debounce)
         self._last_turn_dir = 0
         self._recov_lock    = 0
         self._tick = 0
@@ -175,15 +186,25 @@ class _Follower:
                            f"TURN({'L' if self.latch_dir < 0 else 'R'}) latch={self.latch_ticks}")
                 return
 
-        # ── fork / cross: PICK a side and GO (never U-turn) ───────
+        # ── fork / cross: CONFIRM it's real, then PICK a side and GO ──
+        # A genuine junction keeps 3-4 sensors on the tape for several ticks in
+        # a row; a 1-2 tick 3-sensor hit is just the chassis crossing the line
+        # during a wobble. Only commit a pick-a-side pivot once it persists —
+        # otherwise fall through to PD (a 3-sensor pattern reads as centred, so
+        # the robot simply keeps driving straight while we wait it out).
         if count >= 3:
-            d = _junction_dir(L1, L2, R1, R2, count)
-            self._arm_turn(d)
-            self.last_error = float(d) * E_OUTER
-            self._drive_turn(bot)
-            self._lost_since = None
-            self._emit(bits, float(d) * E_OUTER, f"FORK({'L' if d < 0 else 'R'})->go")
-            return
+            self.junc_count += 1
+            if self.junc_count >= JUNCTION_CONFIRM:
+                self.junc_count = 0
+                d = _junction_dir(L1, L2, R1, R2, count)
+                self._arm_turn(d)
+                self.last_error = float(d) * E_OUTER
+                self._drive_turn(bot)
+                self._lost_since = None
+                self._emit(bits, float(d) * E_OUTER, f"FORK({'L' if d < 0 else 'R'})->go")
+                return
+        else:
+            self.junc_count = 0
 
         raw = _read_pattern(L1, L2, R1, R2)
 
