@@ -176,9 +176,19 @@ class LineFollower:
 
         # ── Motor control ──────────────────────────────────────────────
         if self.search_active:
-            # Searching: spin in place to find the line
-            self.left_speed = SEARCH_SPIN_SPEED * self.search_direction
-            self.right_speed = -SEARCH_SPIN_SPEED * self.search_direction
+            # Searching: spin in place to find the line, watch for any sensor activation
+            # When spinning, if ANY sensor sees tape, stop spinning and resume following
+            if error is not None:
+                # Line found during search! Stop spinning and resume normal steering
+                if self.debug:
+                    print(f"[{self.elapsed():.1f}s] ✓ Line found during search! Resuming (direction={'LEFT' if self.search_direction < 0 else 'RIGHT'})")
+                self.search_active = False
+                self.prev_error = error  # Reset derivative to avoid spike
+                # Fall through to normal steering below
+            else:
+                # Still searching - spin to explore
+                self.left_speed = SEARCH_SPIN_SPEED * self.search_direction
+                self.right_speed = -SEARCH_SPIN_SPEED * self.search_direction
         elif self.brake_counter > 0:
             # Braking phase
             self.left_speed = BRAKE_SPEED
@@ -186,12 +196,12 @@ class LineFollower:
             self.brake_counter -= 1
             if self.debug and self.brake_counter == 0:
                 print(f"[{self.elapsed():.1f}s] ✓ Brake complete, resuming steering")
-        else:
-            # PD steering control
-            P = error if error is not None else 0
-            D = error - self.prev_error if error is not None else 0
+        elif not self.search_active and error is not None:
+            # Normal PD steering control (only if not searching and line found)
+            P = error
+            D = error - self.prev_error
             steering = (Kp * P) + (Kd * D)
-            self.prev_error = error if error is not None else 0
+            self.prev_error = error
 
             # Apply steering
             left_adjust = steering
@@ -202,6 +212,10 @@ class LineFollower:
             # Smooth
             self.left_speed = (SMOOTH * target_left) + ((1 - SMOOTH) * self.left_speed)
             self.right_speed = (SMOOTH * target_right) + ((1 - SMOOTH) * self.right_speed)
+        else:
+            # Not searching, no line found — coast forward slowly to find it
+            self.left_speed = SPEED * 0.5
+            self.right_speed = SPEED * 0.5
 
         # Clamp
         self.left_speed = max(-255, min(255, self.left_speed))
