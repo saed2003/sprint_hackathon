@@ -11,10 +11,10 @@ WHAT IT DOES
     is just normal off-centre wobble, so it produced an endless false
     FORK(L)/FORK(R) limit cycle. See git history / last_run.log.)
   • Drives at ONE fast SPEED with PD steering for smooth tracking.
-  • Hard bends — 3-sensors-on-one-side or outer-only (1110/1000 -> LEFT,
-    0111/0001 -> RIGHT) — STOP (brake pulse kills momentum so we don't sail
-    past), pivot toward the line, then continue the instant the inner sensors
-    re-centre. All-black [1111] reads as "centred" -> keep going straight.
+  • Sharp bends (only an OUTER sensor on the line) commit a short latched turn
+    with a momentum-kill brake pulse; the turn ends the instant the inner
+    sensors re-centre. All-black frames (e.g. a steep approach to a curve) read
+    as "centred" → just keep going straight.
   • If the tape is fully lost it spin-searches toward the last-seen side, and
     ends the run after END_LOST_SEC (default 3 s) of nothing.
   • Writes a full per-tick log to  tape_following/last_run.log  every run.
@@ -38,21 +38,28 @@ from setup_and_api.api import RasBot
 # ═══════════════════════════════════════════════════════════════════
 #  TUNING  — change values here only
 # ═══════════════════════════════════════════════════════════════════
-SPEED          = 220    # ONE constant cruise speed (fast). raise to go faster
-Kp             = 24     # proportional steering gain
-Kd             = 14     # derivative gain (damps wobble)
-SMOOTH         = 0.35   # motor EMA smoothing (0.15 silky -> 0.5 snappy)
+SPEED          = 185    # ONE constant cruise speed (fast). raise to go faster
+Kp             = 15     # proportional steering gain. LOWERED (was 24) — the old
+                        # value overcorrected on a single-inner-sensor (±1) read
+                        # and threw the robot into the opposite ±1, i.e. zig-zag.
+Kd             = 8      # derivative gain. LOWERED (was 14) — on digital sensors the
+                        # error is quantized, so each ±1 flip spikes the derivative
+                        # and FEEDS the wobble instead of damping it. Keep it small.
+SMOOTH         = 0.22   # motor EMA smoothing (lower = silkier). LOWERED (was 0.35)
+                        # so the wheels ease between speeds instead of snapping.
 
-# Turns — a sharp turn STOPS (brake), pivots toward the line, then continues
+# Turns
 PIVOT_FWD      = 130    # outer wheel during a pivot
 PIVOT_REV      = -85    # inner wheel during a pivot (negative = reverse)
-PIVOT_LATCH    = 28     # MAX ticks committed to a turn (28 x 8ms ~= 0.22 s). The
-                        # reacquire check ends the turn the instant the inner
-                        # sensors re-center; this is just a ceiling on overshoot.
-BRAKE_PULSE    = 6      # ticks of full brake on turn ENTRY — kills forward momentum
-                        # so a fast robot STOPS instead of sailing past the turn.
-BRAKE_SPEED    = -120   # both-wheel speed during the brake pulse (reverse = hard stop)
-RECOVERY_LOCK  = 15     # ticks ignoring an opposite-side sharp turn just after a turn
+PIVOT_LATCH    = 22     # MAX ticks committed to a turn (22 x 8ms ~= 0.18 s). Short
+                        # on purpose: the reacquire check ends the turn the instant
+                        # the inner sensors re-center, so this is only a ceiling that
+                        # bounds overshoot. (Was 70 = 0.56 s of blind spin → the
+                        # robot sailed clean off the line; see last_run.log ticks
+                        # 230-293 where one turn went [0111]→[1111]→[0000].)
+BRAKE_PULSE    = 4      # reverse ticks on turn ENTRY to kill momentum (anti-miss)
+BRAKE_SPEED    = -100   # both-wheel speed during the brake pulse
+RECOVERY_LOCK  = 15     # ticks ignoring opposite outer sensor after a turn
 
 # Lost line
 LOST_SPEED     = 110    # in-place spin speed while searching for the line
@@ -70,11 +77,10 @@ _HERE     = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE  = os.path.join(_HERE, "last_run.log")
 # ═══════════════════════════════════════════════════════════════════
 
-# Discrete position error from the 4-bit pattern (sign: - = tape LEFT, + = RIGHT)
-#   1000 -> -3   1100 -> -2   0100 -> -1   0110 -> 0   0010 -> +1   0011 -> +2   0001 -> +3
-E_SLIGHT = 1.0   # one inner sensor only        (0100 / 0010)
-E_LEAN   = 2.0   # inner + outer, same side     (1100 / 0011)
-E_SHARP  = 3.0   # outer only / 3-on-one-side   (1000 / 0001 / 1110 / 0111) -> stop+pivot
+# Sensor error magnitudes (sign: - = tape LEFT, + = tape RIGHT)
+E_INNER = 1.0   # one inner sensor
+E_BOTH  = 2.0   # inner + outer same side
+E_OUTER = 4.0   # outer sensor only -> sharp corner
 
 
 def clamp(v, lo=-255, hi=255):
@@ -82,21 +88,15 @@ def clamp(v, lo=-255, hi=255):
 
 
 def _read_pattern(L1, L2, R1, R2):
-    """4-bit pattern -> signed position error (-3..+3), or None if all-off.
-
-    Both inner sensors on (x11x: 0110/1110/0111/1111) reads as CENTERED — the
-    3-sensor and all-black frames are just a wide/steep crossing of the line.
-    The hard turns (3-on-one-side / outer-only) are caught earlier in step()
-    as a stop-and-pivot; here they map to ±E_SHARP as a PD fallback.
-    """
-    if L2 and R1:   return 0.0        # x11x centered (0110/1110/0111/1111)
-    if L1 and L2:   return -E_LEAN    # 1100 leaning left
-    if L2:          return -E_SLIGHT  # 0100 slight left
-    if L1:          return -E_SHARP   # 1000 hard left (outer only)
-    if R1 and R2:   return  E_LEAN    # 0011 leaning right
-    if R1:          return  E_SLIGHT  # 0010 slight right
-    if R2:          return  E_SHARP   # 0001 hard right (outer only)
-    return None                        # 0000 lost
+    """0-2 active sensors -> signed error, or None if all-off."""
+    if L2 and R1:                               return 0.0        # 0110 centred
+    if L1 and not L2 and not R1 and not R2:     return -E_OUTER   # 1000 hard-left
+    if L1 and L2:                               return -E_BOTH    # 1100 leaning left
+    if L2:                                      return -E_INNER   # 0100 slight left
+    if R2 and not R1 and not L1 and not L2:     return  E_OUTER   # 0001 hard-right
+    if R1 and R2:                               return  E_BOTH    # 0011 leaning right
+    if R1:                                      return  E_INNER   # 0010 slight right
+    return None                                                    # 0000 lost
 
 
 class _Log:
@@ -165,12 +165,14 @@ class _Follower:
         self._tick += 1
         now = time.time()
 
-        # ── committed turn: pivot until back on the line ──────────
-        # End the turn the instant we re-center (raw 0, incl. the 3-sensor /
-        # all-black frames) or even just barely on (±E_SLIGHT), then resume PD.
+        # ── committed turn: finish it before anything else ────────
+        # End the turn the instant we're back on the line — a centred reading
+        # includes the all-black / 3-sensor frames ([1110],[0111],[1111]) that
+        # happen on a steep approach to a curve, so those STOP the turn rather
+        # than extend it (no more spinning in place on a black patch).
         if self.latch_ticks > 0:
             raw = _read_pattern(L1, L2, R1, R2)
-            reacquired = (raw is not None and abs(raw) <= E_SLIGHT)
+            reacquired = (raw is not None and abs(raw) <= E_INNER)
             if reacquired:
                 self.latch_ticks = 0
                 self._recov_lock = RECOVERY_LOCK
@@ -178,31 +180,13 @@ class _Follower:
                 self.latch_ticks -= 1
                 self._drive_turn(bot)
                 self._lost_since = None
-                self._emit(bits, float(self.latch_dir) * E_SHARP,
+                self._emit(bits, float(self.latch_dir) * E_OUTER,
                            f"TURN({'L' if self.latch_dir < 0 else 'R'}) latch={self.latch_ticks}")
                 return
 
-        # ── SHARP TURN: STOP, pivot toward the line, then continue ────
-        # 3-on-one-side or outer-only means a hard bend the PD loop would sail
-        # past at speed:  1110 / 1000 -> LEFT,  0111 / 0001 -> RIGHT.
-        # _arm_turn brakes to a stop first (BRAKE_PULSE) so momentum can't carry
-        # us past, then we pivot until the inner sensors re-center. THIS is the
-        # fix for missed turns.
-        sharp_left  = bits in ("1110", "1000")
-        sharp_right = bits in ("0111", "0001")
-        if sharp_left or sharp_right:
-            d = -1 if sharp_left else 1
-            # just after a turn the body is still sweeping across the tape — don't
-            # instantly fire the OPPOSITE turn; let PD ease through it instead.
-            if not (self._recov_lock > 0 and d != self._last_turn_dir):
-                self._arm_turn(d)
-                self._drive_turn(bot)
-                self.last_error = float(d) * E_SHARP
-                self._lost_since = None
-                self._emit(bits, float(d) * E_SHARP,
-                           f"CORNER({'L' if d < 0 else 'R'})")
-                return
-
+        # NOTE: single continuous line — NO junction/fork handling on purpose.
+        # A 3-sensor reading is just off-centre wobble; _read_pattern maps it to
+        # "centred" so PD keeps the robot straight instead of pivoting.
         raw = _read_pattern(L1, L2, R1, R2)
 
         # ── lost line ─────────────────────────────────────────────
@@ -227,13 +211,10 @@ class _Follower:
                 self._snap(bot, -LOST_SPEED, LOST_SPEED)
             else:
                 self._snap(bot, LOST_SPEED, -LOST_SPEED)
-            self._emit(bits, float(side) * E_SHARP, f"LOST({'L' if side < 0 else 'R'})")
+            self._emit(bits, float(side) * E_OUTER, f"LOST({'L' if side < 0 else 'R'})")
             return
 
-        # ── on the line: PD steering at constant speed ────────────
-        # (Hard turns were already handled above as stop-and-pivot. The only way
-        # we reach here with ±E_SHARP is when RECOVERY_LOCK suppressed an opposite
-        # turn — then PD just steers hard through it, which is what we want.)
+        # ── on the line ───────────────────────────────────────────
         self.lost_ticks = 0
         self._lost_since = None
         error = raw
@@ -242,6 +223,25 @@ class _Follower:
         correction = Kp * error + Kd * derivative
         self.last_error = error
 
+        # ── sharp corner (outer only) -> commit a turn ────────────
+        if abs(error) >= E_OUTER:
+            turn_dir = 1 if error > 0 else -1
+            # recovery lock: just after a turn, an opposite outer hit is
+            # usually the body still crossing the tape -> treat as a curve
+            if self._recov_lock > 0 and turn_dir != self._last_turn_dir:
+                self._recov_lock -= 1
+                error = float(turn_dir) * E_BOTH
+                correction = Kp * error + Kd * derivative
+            else:
+                if self._recov_lock > 0:
+                    self._recov_lock -= 1
+                self._arm_turn(turn_dir)
+                self._drive_turn(bot)
+                self._emit(bits, float(turn_dir) * E_OUTER,
+                           f"CORNER({'R' if turn_dir > 0 else 'L'})")
+                return
+
+        # ── normal tracking at constant speed ─────────────────────
         if self._recov_lock > 0:
             self._recov_lock -= 1
 
@@ -252,7 +252,7 @@ class _Follower:
         self._apply(bot, self.actual_L, self.actual_R)
 
         if error == 0:               st = "STRAIGHT"
-        elif abs(error) <= E_SLIGHT:  st = "SLIGHT"
+        elif abs(error) <= E_INNER:  st = "SLIGHT"
         else:                        st = "CURVE"
         self._emit(bits, error, st)
 
