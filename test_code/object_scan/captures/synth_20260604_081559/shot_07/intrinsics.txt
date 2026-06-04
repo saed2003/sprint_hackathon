@@ -1,0 +1,8 @@
+width 848
+height 480
+fx 422.0
+fy 422.0
+ppx 424.0
+ppy 240.0
+depth_scale 0.001
+baseline_m 0.018
