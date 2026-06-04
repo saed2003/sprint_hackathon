@@ -27,7 +27,7 @@ from setup_and_api.api import RasBot, Color
 # ═══════════════════════════════════════════════════════════════════
 #  TUNING PARAMETERS
 # ═══════════════════════════════════════════════════════════════════
-SPEED          = 80       # base forward speed (0-255)
+SPEED          = 60       # base forward speed (0-255)
 Kp             = 24       # proportional steering gain
 Kd             = 14       # derivative gain (reduces wobble)
 SMOOTH         = 0.35     # motor smoothing (0.1 smooth -> 0.5 snappy)
