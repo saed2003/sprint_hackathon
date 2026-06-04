@@ -64,6 +64,10 @@ reg = o3d.pipelines.registration
 
 WINDOW = 3        # register each view to its next W neighbours (wrapping) -> redundant ring
 FIT_MIN = 0.30    # ICP fitness floor to ACCEPT an edge (rejects fits locked onto noise)
+PRIOR_TOL_DEG = 40  # reject a FEATURE edge whose rotation disagrees with the angle prior by more
+                    # than this — kills ~180 deg "symmetry folds" (a car's two sides look alike, so
+                    # features can mis-lock left<->right and GHOST the car into two places). When a
+                    # feature edge is vetoed we fall back to the prior init (ICP can't jump 180 deg).
 
 
 # ── geometry: the object-centred angle prior (now only a FALLBACK init) ───────────
@@ -133,12 +137,19 @@ def _relative_prior(center, angles, i, j):
     return np.linalg.inv(ry_about(center, angles[j])) @ ry_about(center, angles[i])
 
 
+def _rot_deg_between(Ra, Rb):
+    """Geodesic angle (deg) between two 3x3 rotation matrices."""
+    c = (np.trace(Ra @ Rb.T) - 1.0) / 2.0
+    return float(np.degrees(np.arccos(np.clip(c, -1.0, 1.0))))
+
+
 def build_edges(seg_pcds, shots, center, angles, voxel, window, fit_min,
-                loop=True, force_sift=False, log=print):
+                loop=True, force_sift=False, prior_tol=PRIOR_TOL_DEG, log=print):
     """Windowed, gated edges. For each view i and dj in 1..window, register i to (i+dj)%n:
-    coarse pose from features (register_pair_robust), else the angle prior; refine with ICP;
-    ACCEPT only fits with fitness >= fit_min and a small rmse. Adjacent (and the 0<->n-1 wrap)
-    are odometry edges; the rest are uncertain loop closures.
+    coarse pose from features (register_pair_robust), VETOED if it disagrees with the angle
+    prior by > prior_tol (a symmetry fold), else the angle prior; refine with ICP; ACCEPT only
+    fits with fitness >= fit_min and a small rmse. Adjacent (and the 0<->n-1 wrap) are odometry
+    edges; the rest are uncertain loop closures.
 
     Returns {(a, b): {T (a->b), info, fit, rmse, uncertain}} with a < b.
     """
@@ -147,16 +158,20 @@ def build_edges(seg_pcds, shots, center, angles, voxel, window, fit_min,
     pairs = sorted({(min(i, (i + dj) % n), max(i, (i + dj) % n))
                     for i in range(n) for dj in range(1, window + 1) if (i + dj) % n != i})
     edges = {}
-    n_feat = 0
+    n_feat = n_fold = 0
     for a, b in pairs:
         if not loop and (b - a) > window:                 # a wrap pair across the 360 seam
             continue
+        prior_T = _relative_prior(center, angles, a, b)
         res, det = R.register_pair_robust(shots[a], shots[b], force_sift)
-        if res is not None:
-            init, src = res["T"], "feat-" + det
+        if res is not None and _rot_deg_between(res["T"][:3, :3], prior_T[:3, :3]) <= prior_tol:
+            init, src = res["T"], "feat-" + det          # feature pose agrees with the prior
             n_feat += 1
+        elif res is not None:
+            init, src = prior_T, "prior(fold)"           # feature disagreed -> drop the fold
+            n_fold += 1
         else:
-            init, src = _relative_prior(center, angles, a, b), "prior"
+            init, src = prior_T, "prior"                 # no feature match -> prior
         icp = _icp_refine(seg_pcds[a], seg_pcds[b], init, coarse, fine)
         if icp.fitness < fit_min or not (0.0 < icp.inlier_rmse <= fine):
             log(f"  {a:2d}-{b:2d} [{src}] reject  (fit {icp.fitness:.2f}, "
@@ -172,7 +187,8 @@ def build_edges(seg_pcds, shots, center, angles, voxel, window, fit_min,
                          "fit": icp.fitness, "rmse": icp.inlier_rmse, "uncertain": uncertain}
         log(f"  {a:2d}-{b:2d} [{src}/{'loop' if uncertain else 'odom'}] "
             f"fit {icp.fitness:.2f}, rmse {icp.inlier_rmse * 1000:.0f}mm")
-    log(f"  {len(edges)} edges accepted ({n_feat} feature-measured)")
+    log(f"  {len(edges)} edges accepted ({n_feat} feature-measured, "
+        f"{n_fold} symmetry-folds vetoed -> prior)")
     return edges
 
 
@@ -226,7 +242,7 @@ def solve_and_fuse(seg_pcds, edges, voxel, log=print):
 
 def build(session_dir, voxel=0.003, zmin=seg.ZMIN_DEFAULT, zmax=seg.ZMAX_DEFAULT,
           remove_plane=True, crop=None, loop=True, direction=1, window=WINDOW,
-          fit_min=FIT_MIN, force_sift=False, log=print):
+          fit_min=FIT_MIN, force_sift=False, prior_tol=PRIOR_TOL_DEG, log=print):
     """Segment, measure+verify windowed edges, robustly optimize, fuse -> merged_object.ply.
 
     direction: sign of the turn between shots, used only for the prior FALLBACK init.
@@ -275,7 +291,7 @@ def build(session_dir, voxel=0.003, zmin=seg.ZMIN_DEFAULT, zmax=seg.ZMAX_DEFAULT
     log(f"  registering (window={window}, fit>={fit_min}, "
         f"{'ring + loop' if loop else 'open chain'})...")
     edges = build_edges(seg_pcds, shots, center, angles, voxel, window, fit_min,
-                        loop=loop, force_sift=force_sift, log=log)
+                        loop=loop, force_sift=force_sift, prior_tol=prior_tol, log=log)
     if not edges:
         sys.exit("no edges survived gating — object too smooth/dark, or too little overlap. "
                  "Try --sift, a tighter depth gate (--object), or recapture with more overlap.")
@@ -321,6 +337,7 @@ def _main():
     direction = _pop(args, "--dir", int) or 1
     window = _pop(args, "--win", int) or WINDOW
     fit_min = _pop(args, "--fit-min", float) or FIT_MIN
+    prior_tol = _pop(args, "--prior-tol", float) or PRIOR_TOL_DEG
 
     if obj:                                   # --object preset fills any unset knob
         import config
@@ -338,7 +355,8 @@ def _main():
                  "[--voxel 0.003] [--crop 0.15] [--zmax 0.45] [--dir -1] [--win 3] "
                  "[--fit-min 0.3] [--sift] [--no-loop] [--mesh]")
     out = build(args[0], voxel=voxel, zmin=zmin, zmax=zmax, crop=crop, loop=loop,
-                direction=direction, window=window, fit_min=fit_min, force_sift=force_sift)
+                direction=direction, window=window, fit_min=fit_min, force_sift=force_sift,
+                prior_tol=prior_tol)
     if do_mesh:
         import mesh
         mesh.poisson_mesh(out)

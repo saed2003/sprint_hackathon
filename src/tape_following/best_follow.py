@@ -1,30 +1,25 @@
 """
-best_follow.py — Adaptive PD line follower (best combined version)
-==================================================================
-Combines the strongest idea from every follower in this folder:
+best_follow.py — Fast constant-speed line follower (Yahboom RASPBOT V2)
+======================================================================
+Focused, simple, FAST. One cruise speed (no dynamic speed for now — the
+dynamic/path-memory version is preserved in git history, commit 72de6dd).
 
-  p_follow.py      → weighted proportional error
-  pd_follow.py     → derivative term that kills oscillation
-  line_follow.py   → predictive braking into corners + hard pivot on sharp turns
-  simple_follow.py → memory-based lost-line recovery
-  best_follow.py   → EMA motor smoothing for jerk-free drive
+WHAT IT DOES
+  • Drives at ONE fast SPEED, PD steering for smooth tracking.
+  • Commit-latch turns + a momentum-kill brake pulse so fast turns are not
+    missed (the brake pulse is turn-ENTRY only, not dynamic cruise).
+  • At a fork / T / cross (sees branches left AND right): PICKS a side
+    (JUNCTION_DIR) and drives onto it — never does a U-turn.
+  • Stops the run after the tape is lost for END_LOST_SEC (default 3 s).
+  • Writes a full per-tick log to  tape_following/last_run.log  every run.
 
-Design goals
-  • FAST on straights (high cruise speed)
-  • NEVER miss a turn (auto-brake into corners + hard pivot on outer-only)
-  • NO wobble on straights (PD damping + motor smoothing)
-  • SMOOTH drive (exponential motor interpolation)
+SENSOR BOARD: Yahboom YB-MVX01, 70 mm wide.
+  L1=outer-left  L2=inner-left  R1=inner-right  R2=outer-right
+  read_line_sensors() -> (L1, L2, R1, R2); True = sees BLACK tape
 
-Sensor board: Yahboom YB-MVX01, 70mm wide.
-  L1 = outer-left   L2 = inner-left   R1 = inner-right   R2 = outer-right
-  inner pair (L2/R1) ~12mm apart — straddle the tape when centred
-  outer pair (L1/R2) ~55mm apart — only fire on a real corner / big drift
-  read_line_sensors() returns (L1, L2, R1, R2); True = sees BLACK tape
-
-Run standalone:
+RUN
   python3 src/tape_following/best_follow.py
-From drive.py F-key:
-  best_follow.run(bot, stop_event=evt)
+From drive.py F-key:  best_follow.run(bot, stop_event=evt)
 """
 
 import time
@@ -35,28 +30,42 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from setup_and_api.api import RasBot
 
 # ═══════════════════════════════════════════════════════════════════
-#  TUNING  — only change values in this block
+#  TUNING  — change values here only
 # ═══════════════════════════════════════════════════════════════════
-CRUISE_SPEED  = 130    # straight-line speed (fast). raise for more speed
-MIN_SPEED     = 70     # slowest allowed mid-turn (brake floor)
-Kp            = 22     # proportional gain — sharper turns if raised
-Kd            = 14     # derivative gain — damps wobble/overshoot
-BRAKE_K       = 0.45   # auto-brake strength: speed drops as correction grows
-SMOOTH        = 0.30   # motor EMA: 0.15=silky, 0.30=balanced, 0.5=snappy
-PIVOT_FWD     = 115    # outer-wheel speed during a hard corner pivot
-PIVOT_REV     = -55    # inner-wheel speed during a hard corner pivot (spins it round)
-PIVOT_LATCH   = 45     # max ticks to COMMIT to a sharp turn (~0.36s) — fixes missed turns
-JUNCTION_DIR  = +1     # which way to go at a true cross/T-junction: +1 = RIGHT, -1 = LEFT
-LOST_SPEED    = 95     # in-place spin speed when hunting a lost line
-DEBOUNCE      = 2      # consecutive all-off reads before declaring "lost"
-LOOP_DELAY    = 0.008  # ~125 Hz — fast loop keeps the derivative accurate
+SPEED          = 185    # ONE constant cruise speed (fast). raise to go faster
+Kp             = 24     # proportional steering gain
+Kd             = 14     # derivative gain (damps wobble)
+SMOOTH         = 0.35   # motor EMA smoothing (0.15 silky -> 0.5 snappy)
+
+# Turns
+PIVOT_FWD      = 130    # outer wheel during a pivot
+PIVOT_REV      = -85    # inner wheel during a pivot (negative = reverse)
+PIVOT_LATCH    = 70     # ticks committed to a turn (70 x 8ms ~= 0.56 s)
+BRAKE_PULSE    = 4      # reverse ticks on turn ENTRY to kill momentum (anti-miss)
+BRAKE_SPEED    = -100   # both-wheel speed during the brake pulse
+RECOVERY_LOCK  = 25     # ticks ignoring opposite outer sensor after a turn
+JUNCTION_DIR   = +1     # fork/cross choice: +1 = RIGHT, -1 = LEFT  (pick & go)
+
+# Lost line
+LOST_SPEED     = 110    # in-place spin speed while searching for the line
+DEBOUNCE       = 2      # all-off reads before declaring lost
+END_LOST_SEC   = 3.0    # stop the run after the tape is gone this long
+
+LOOP_DELAY     = 0.008  # 125 Hz loop
+
+# Debug / logging
+DEBUG          = True   # print live state to console
+DEBUG_EVERY    = 15     # print every Nth tick (file gets EVERY tick)
+LOG_TO_FILE    = True   # write full per-tick log to last_run.log
+
+_HERE     = os.path.dirname(os.path.abspath(__file__))
+LOG_FILE  = os.path.join(_HERE, "last_run.log")
 # ═══════════════════════════════════════════════════════════════════
 
-# error magnitudes (sign = side: negative = tape LEFT, positive = tape RIGHT)
-E_INNER = 1.0    # one inner sensor only      — tiny drift
-E_BOTH  = 2.0    # inner + outer, same side   — leaning into a curve
-E_OUTER = 4.0    # outer sensor ONLY          — sharp corner, trigger pivot
-E_LOST  = 6.0    # all sensors off            — memory sweep
+# Sensor error magnitudes (sign: - = tape LEFT, + = tape RIGHT)
+E_INNER = 1.0   # one inner sensor
+E_BOTH  = 2.0   # inner + outer same side
+E_OUTER = 4.0   # outer sensor only -> sharp corner
 
 
 def clamp(v, lo=-255, hi=255):
@@ -64,170 +73,241 @@ def clamp(v, lo=-255, hi=255):
 
 
 def _read_pattern(L1, L2, R1, R2):
-    """Map a 0-2 sensor pattern to a signed error, or None if all-off.
-
-    (3-4 sensor patterns are handled as junctions/corners in step(),
-    so this only sees the normal tracking cases.)
-
-    Negative error = tape is LEFT  → steer left.
-    Positive error = tape is RIGHT → steer right.
-    """
-    if L2 and R1:                                   # 0110 centred
-        return 0.0
-    if L1 and not L2 and not R1 and not R2:         # 1000 sharp LEFT corner
-        return -E_OUTER
-    if L1 and L2:                                   # 1100 leaning left
-        return -E_BOTH
-    if L2:                                          # 0100 slight left
-        return -E_INNER
-    if R2 and not R1 and not L1 and not L2:         # 0001 sharp RIGHT corner
-        return E_OUTER
-    if R1 and R2:                                   # 0011 leaning right
-        return E_BOTH
-    if R1:                                          # 0010 slight right
-        return E_INNER
-    return None                                     # 0000 lost
+    """0-2 active sensors -> signed error, or None if all-off."""
+    if L2 and R1:                               return 0.0        # 0110 centred
+    if L1 and not L2 and not R1 and not R2:     return -E_OUTER   # 1000 hard-left
+    if L1 and L2:                               return -E_BOTH    # 1100 leaning left
+    if L2:                                      return -E_INNER   # 0100 slight left
+    if R2 and not R1 and not L1 and not L2:     return  E_OUTER   # 0001 hard-right
+    if R1 and R2:                               return  E_BOTH    # 0011 leaning right
+    if R1:                                      return  E_INNER   # 0010 slight right
+    return None                                                    # 0000 lost
 
 
 def _junction_dir(L1, L2, R1, R2, count):
-    """For a 3-4 sensor reading, decide which way to commit.
-
-    count==4 (1111)  → true cross/T → use the configured JUNCTION_DIR
-    count==3 1110    → tape spans left  → turn LEFT  (-1)
-    count==3 0111    → tape spans right → turn RIGHT (+1)
-    anything odd     → fall back to JUNCTION_DIR
-    """
-    if count == 4:
-        return JUNCTION_DIR
-    if not R2 and L1:        # 1110 — left-biased corner
-        return -1
-    if not L1 and R2:        # 0111 — right-biased corner
-        return +1
+    """Fork/cross -> which way to commit. Biased corners turn their own way;
+    a true cross (all 4) uses the configured JUNCTION_DIR."""
+    if count == 4:       return JUNCTION_DIR
+    if not R2 and L1:    return -1   # 1110 left-biased
+    if not L1 and R2:    return +1   # 0111 right-biased
     return JUNCTION_DIR
 
 
+class _Log:
+    """Writes every tick to last_run.log so we can review the run afterwards."""
+    def __init__(self, enabled):
+        self.f = None
+        if enabled:
+            try:
+                self.f = open(LOG_FILE, "w")
+                self.f.write(f"# best_follow run {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                self.f.write(f"# SPEED={SPEED} Kp={Kp} Kd={Kd} PIVOT_LATCH={PIVOT_LATCH} "
+                             f"BRAKE_PULSE={BRAKE_PULSE} JUNCTION_DIR={JUNCTION_DIR}\n")
+                self.f.write("# tick bits err L R state\n")
+            except Exception as e:
+                print(f"  log file open failed: {e}")
+
+    def write(self, line):
+        if self.f:
+            self.f.write(line + "\n")
+
+    def close(self):
+        if self.f:
+            self.f.flush()
+            self.f.close()
+            print(f"  log saved -> {LOG_FILE}")
+
+
 class _Follower:
-    """Holds the PD + smoothing state so main() and run() share one code path."""
-
-    def __init__(self):
-        self.actual_L = 0.0      # smoothed motor outputs
+    def __init__(self, log=None):
+        self.actual_L = 0.0
         self.actual_R = 0.0
-        self.last_error = 0.0    # for derivative + lost-line memory
-        self.lost_ticks = 0      # debounce counter for all-off
-        self.latch_ticks = 0     # >0 while COMMITTED to a sharp turn / junction
-        self.latch_dir = 0       # which way we're committed: +1 right, -1 left
+        self.last_error = 0.0
+        self.lost_ticks = 0
+        self.latch_ticks    = 0
+        self.latch_dir      = 0
+        self.brake_ticks    = 0
+        self._last_turn_dir = 0
+        self._recov_lock    = 0
+        self._tick = 0
+        self._lost_since = None
+        self.finished = False
+        self.finish_reason = None
+        self.log = log
 
-    def _pivot(self, bot, direction):
-        """Hard in-place pivot toward `direction` (+1 right / -1 left)."""
-        if direction < 0:
+    # ── turn management ───────────────────────────────────────────
+    def _arm_turn(self, direction):
+        self.latch_dir      = direction
+        self.latch_ticks    = PIVOT_LATCH
+        self._last_turn_dir = direction
+        fwd = (self.actual_L + self.actual_R) / 2.0
+        self.brake_ticks = BRAKE_PULSE if fwd > 80 else 0
+
+    def _drive_turn(self, bot):
+        if self.brake_ticks > 0:
+            self.brake_ticks -= 1
+            self._snap(bot, BRAKE_SPEED, BRAKE_SPEED)
+        elif self.latch_dir < 0:
             self._snap(bot, PIVOT_REV, PIVOT_FWD)    # pivot LEFT
         else:
             self._snap(bot, PIVOT_FWD, PIVOT_REV)    # pivot RIGHT
 
+    # ── main step ─────────────────────────────────────────────────
     def step(self, bot):
         L1, L2, R1, R2 = bot.read_line_sensors()
         count = int(L1) + int(L2) + int(R1) + int(R2)
+        bits  = f"{int(L1)}{int(L2)}{int(R1)}{int(R2)}"
+        self._tick += 1
+        now = time.time()
 
-        # ── JUNCTION / CROSS: 3-4 sensors on → commit to a branch fast ──
+        # ── committed turn: finish it before anything else ────────
+        if self.latch_ticks > 0:
+            raw = _read_pattern(L1, L2, R1, R2)
+            reacquired = (count < 3 and raw is not None and abs(raw) <= E_INNER)
+            if reacquired:
+                self.latch_ticks = 0
+                self._recov_lock = RECOVERY_LOCK
+            else:
+                self.latch_ticks -= 1
+                self._drive_turn(bot)
+                self._lost_since = None
+                self._emit(bits, float(self.latch_dir) * E_OUTER,
+                           f"TURN({'L' if self.latch_dir < 0 else 'R'}) latch={self.latch_ticks}")
+                return
+
+        # ── fork / cross: PICK a side and GO (never U-turn) ───────
         if count >= 3:
-            self.latch_dir = _junction_dir(L1, L2, R1, R2, count)
-            self.latch_ticks = PIVOT_LATCH
-            self.last_error = float(self.latch_dir) * E_OUTER
-            self._pivot(bot, self.latch_dir)
+            d = _junction_dir(L1, L2, R1, R2, count)
+            self._arm_turn(d)
+            self.last_error = float(d) * E_OUTER
+            self._drive_turn(bot)
+            self._lost_since = None
+            self._emit(bits, float(d) * E_OUTER, f"FORK({'L' if d < 0 else 'R'})->go")
             return
 
         raw = _read_pattern(L1, L2, R1, R2)
 
-        # ── COMMITTED TURN: keep pivoting until the line re-centres ─────
-        # This is what stops "almost made it" misses — the robot finishes
-        # the turn through the brief all-off zone instead of giving up.
-        if self.latch_ticks > 0:
-            reacquired = (raw is not None and abs(raw) <= E_INNER)
-            if reacquired:
-                self.latch_ticks = 0          # turn complete → resume tracking
-            else:
-                self.latch_ticks -= 1
-                self._pivot(bot, self.latch_dir)
-                return
-
-        # ── lost-line handling with debounce ───────────────────────────
+        # ── lost line ─────────────────────────────────────────────
         if raw is None:
             self.lost_ticks += 1
-            if self.lost_ticks < DEBOUNCE:
-                # brief dropout — coast on the last motor command
-                self._apply(bot, self.actual_L, self.actual_R)
+            if self._lost_since is None:
+                self._lost_since = now
+            if now - self._lost_since >= END_LOST_SEC:
+                self.finished = True
+                self.finish_reason = f"tape lost {END_LOST_SEC:.0f}s"
+                bot.stop()
+                self._emit(bits, 0, "END(lost)")
                 return
-            # truly lost → spin toward the side we last saw tape
-            if self.last_error < 0:
+            if self.lost_ticks < DEBOUNCE:
+                self._apply(bot, self.actual_L, self.actual_R)
+                self._emit(bits, 0, "COAST")
+                return
+            # search toward the side the tape was last seen
+            side = self._last_turn_dir if self._last_turn_dir != 0 else (
+                -1 if self.last_error < 0 else 1)
+            if side < 0:
                 self._snap(bot, -LOST_SPEED, LOST_SPEED)
-            elif self.last_error > 0:
-                self._snap(bot, LOST_SPEED, -LOST_SPEED)
             else:
-                self._snap(bot, -LOST_SPEED, LOST_SPEED)   # default hunt left
+                self._snap(bot, LOST_SPEED, -LOST_SPEED)
+            self._emit(bits, float(side) * E_OUTER, f"LOST({'L' if side < 0 else 'R'})")
             return
 
+        # ── on the line ───────────────────────────────────────────
         self.lost_ticks = 0
+        self._lost_since = None
         error = raw
 
-        # ── PD correction ──────────────────────────────────────────────
         derivative = error - self.last_error
         correction = Kp * error + Kd * derivative
-        self.last_error = error                  # remember real readings only
+        self.last_error = error
 
-        # ── SHARP CORNER (outer sensor only) → arm the commit latch ────
-        # Snap into the pivot AND latch it so the turn completes even if the
-        # sensors go blank mid-rotation.
+        # ── sharp corner (outer only) -> commit a turn ────────────
         if abs(error) >= E_OUTER:
-            self.latch_dir = 1 if error > 0 else -1
-            self.latch_ticks = PIVOT_LATCH
-            self._pivot(bot, self.latch_dir)
-            return
+            turn_dir = 1 if error > 0 else -1
+            # recovery lock: just after a turn, an opposite outer hit is
+            # usually the body still crossing the tape -> treat as a curve
+            if self._recov_lock > 0 and turn_dir != self._last_turn_dir:
+                self._recov_lock -= 1
+                error = float(turn_dir) * E_BOTH
+                correction = Kp * error + Kd * derivative
+            else:
+                if self._recov_lock > 0:
+                    self._recov_lock -= 1
+                self._arm_turn(turn_dir)
+                self._drive_turn(bot)
+                self._emit(bits, float(turn_dir) * E_OUTER,
+                           f"CORNER({'R' if turn_dir > 0 else 'L'})")
+                return
 
-        # ── normal tracking with predictive braking ───────────────────
-        # The bigger the correction, the more we slow down → no overshoot,
-        # full speed returns automatically on the straight.
-        speed = max(MIN_SPEED, CRUISE_SPEED - abs(correction) * BRAKE_K)
-        target_L = speed + correction
-        target_R = speed - correction
+        # ── normal tracking at constant speed ─────────────────────
+        if self._recov_lock > 0:
+            self._recov_lock -= 1
 
-        # EMA smoothing → no jerk
+        target_L = SPEED + correction
+        target_R = SPEED - correction
         self.actual_L += (target_L - self.actual_L) * SMOOTH
         self.actual_R += (target_R - self.actual_R) * SMOOTH
         self._apply(bot, self.actual_L, self.actual_R)
+
+        if error == 0:               st = "STRAIGHT"
+        elif abs(error) <= E_INNER:  st = "SLIGHT"
+        else:                        st = "CURVE"
+        self._emit(bits, error, st)
+
+    # ── output ────────────────────────────────────────────────────
+    def _emit(self, bits, error, state):
+        line = (f"[{self._tick:06d}] [{bits}] err:{error:+.1f} "
+                f"L:{int(self.actual_L):4d} R:{int(self.actual_R):4d}  {state}")
+        if self.log:
+            self.log.write(line)                       # every tick to file
+        if DEBUG and self._tick % DEBUG_EVERY == 0:
+            print(line, flush=True)                    # sampled to console
 
     def _apply(self, bot, l, r):
         bot._apply_motors(clamp(l), clamp(l), clamp(r), clamp(r))
 
     def _snap(self, bot, l, r):
-        """Instant motor set (bypasses smoothing) for pivots / sweeps."""
         self.actual_L, self.actual_R = float(l), float(r)
         self._apply(bot, l, r)
 
 
+def run(bot, stop_event=None, **kwargs):
+    """Called by drive.py F-key."""
+    log = _Log(LOG_TO_FILE)
+    f = _Follower(log=log)
+    try:
+        while stop_event is None or not stop_event.is_set():
+            f.step(bot)
+            if f.finished:
+                print(f"\n*** RUN COMPLETE — {f.finish_reason} ***", flush=True)
+                break
+            time.sleep(LOOP_DELAY)
+    finally:
+        bot.stop()
+        log.close()
+
+
 def main():
-    follower = _Follower()
     with RasBot() as bot:
-        print("best_follow (adaptive PD) started. Ctrl+C to stop.")
+        print("best_follow (fast constant speed) started. Ctrl+C to stop.")
+        print(f"  SPEED={SPEED} Kp={Kp} Kd={Kd}  END after {END_LOST_SEC:.0f}s lost")
+        print(f"  logging every tick to {LOG_FILE}")
+        print("  [tick] [bits] err L R state")
+        log = _Log(LOG_TO_FILE)
+        f = _Follower(log=log)
         try:
             while True:
-                follower.step(bot)
+                f.step(bot)
+                if f.finished:
+                    print(f"\n*** RUN COMPLETE — {f.finish_reason} ***", flush=True)
+                    break
                 time.sleep(LOOP_DELAY)
         except KeyboardInterrupt:
             print("\nStopping...")
         finally:
             bot.stop()
+            log.close()
             print("Motors off.")
-
-
-def run(bot, stop_event=None, **kwargs):
-    """Entry point called by drive.py F-key (mirrors line_follow.run API)."""
-    follower = _Follower()
-    try:
-        while stop_event is None or not stop_event.is_set():
-            follower.step(bot)
-            time.sleep(LOOP_DELAY)
-    finally:
-        bot.stop()
 
 
 if __name__ == "__main__":
