@@ -5,12 +5,18 @@ Focused, simple, FAST. One cruise speed (no dynamic speed for now — the
 dynamic/path-memory version is preserved in git history, commit 72de6dd).
 
 WHAT IT DOES
-  • Drives at ONE fast SPEED, PD steering for smooth tracking.
-  • Commit-latch turns + a momentum-kill brake pulse so fast turns are not
-    missed (the brake pulse is turn-ENTRY only, not dynamic cruise).
-  • At a fork / T / cross (sees branches left AND right): PICKS a side
-    (JUNCTION_DIR) and drives onto it — never does a U-turn.
-  • Stops the run after the tape is lost for END_LOST_SEC (default 3 s).
+  • Follows ONE continuous curvy line — there are NO junctions/forks/crosses,
+    so there is deliberately no junction logic. (An earlier version treated any
+    3-sensor reading as a "fork" and committed a pivot; on a single line that
+    is just normal off-centre wobble, so it produced an endless false
+    FORK(L)/FORK(R) limit cycle. See git history / last_run.log.)
+  • Drives at ONE fast SPEED with PD steering for smooth tracking.
+  • Sharp bends (only an OUTER sensor on the line) commit a short latched turn
+    with a momentum-kill brake pulse; the turn ends the instant the inner
+    sensors re-centre. All-black frames (e.g. a steep approach to a curve) read
+    as "centred" → just keep going straight.
+  • If the tape is fully lost it spin-searches toward the last-seen side, and
+    ends the run after END_LOST_SEC (default 3 s) of nothing.
   • Writes a full per-tick log to  tape_following/last_run.log  every run.
 
 SENSOR BOARD: Yahboom YB-MVX01, 70 mm wide.
@@ -49,12 +55,6 @@ PIVOT_LATCH    = 22     # MAX ticks committed to a turn (22 x 8ms ~= 0.18 s). Sh
 BRAKE_PULSE    = 4      # reverse ticks on turn ENTRY to kill momentum (anti-miss)
 BRAKE_SPEED    = -100   # both-wheel speed during the brake pulse
 RECOVERY_LOCK  = 15     # ticks ignoring opposite outer sensor after a turn
-JUNCTION_DIR   = +1     # fork/cross choice: +1 = RIGHT, -1 = LEFT  (pick & go)
-JUNCTION_CONFIRM = 3    # consecutive 3+-sensor ticks required before we BELIEVE a
-                        # junction is real. A 1-2 tick 3-sensor blip is just the
-                        # chassis crossing the tape at an angle during a wobble —
-                        # steer through it with PD, do NOT commit a pivot. (This is
-                        # what caused the endless false FORK(L)/FORK(R) limit cycle.)
 
 # Lost line
 LOST_SPEED     = 110    # in-place spin speed while searching for the line
@@ -94,15 +94,6 @@ def _read_pattern(L1, L2, R1, R2):
     return None                                                    # 0000 lost
 
 
-def _junction_dir(L1, L2, R1, R2, count):
-    """Fork/cross -> which way to commit. Biased corners turn their own way;
-    a true cross (all 4) uses the configured JUNCTION_DIR."""
-    if count == 4:       return JUNCTION_DIR
-    if not R2 and L1:    return -1   # 1110 left-biased
-    if not L1 and R2:    return +1   # 0111 right-biased
-    return JUNCTION_DIR
-
-
 class _Log:
     """Writes every tick to last_run.log so we can review the run afterwards."""
     def __init__(self, enabled):
@@ -112,7 +103,7 @@ class _Log:
                 self.f = open(LOG_FILE, "w")
                 self.f.write(f"# best_follow run {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
                 self.f.write(f"# SPEED={SPEED} Kp={Kp} Kd={Kd} PIVOT_LATCH={PIVOT_LATCH} "
-                             f"BRAKE_PULSE={BRAKE_PULSE} JUNCTION_DIR={JUNCTION_DIR}\n")
+                             f"BRAKE_PULSE={BRAKE_PULSE} RECOVERY_LOCK={RECOVERY_LOCK}\n")
                 self.f.write("# tick bits err L R state\n")
             except Exception as e:
                 print(f"  log file open failed: {e}")
@@ -137,7 +128,6 @@ class _Follower:
         self.latch_ticks    = 0
         self.latch_dir      = 0
         self.brake_ticks    = 0
-        self.junc_count     = 0      # consecutive 3+-sensor ticks (junction debounce)
         self._last_turn_dir = 0
         self._recov_lock    = 0
         self._tick = 0
@@ -166,15 +156,18 @@ class _Follower:
     # ── main step ─────────────────────────────────────────────────
     def step(self, bot):
         L1, L2, R1, R2 = bot.read_line_sensors()
-        count = int(L1) + int(L2) + int(R1) + int(R2)
         bits  = f"{int(L1)}{int(L2)}{int(R1)}{int(R2)}"
         self._tick += 1
         now = time.time()
 
         # ── committed turn: finish it before anything else ────────
+        # End the turn the instant we're back on the line — a centred reading
+        # includes the all-black / 3-sensor frames ([1110],[0111],[1111]) that
+        # happen on a steep approach to a curve, so those STOP the turn rather
+        # than extend it (no more spinning in place on a black patch).
         if self.latch_ticks > 0:
             raw = _read_pattern(L1, L2, R1, R2)
-            reacquired = (count < 3 and raw is not None and abs(raw) <= E_INNER)
+            reacquired = (raw is not None and abs(raw) <= E_INNER)
             if reacquired:
                 self.latch_ticks = 0
                 self._recov_lock = RECOVERY_LOCK
@@ -186,26 +179,9 @@ class _Follower:
                            f"TURN({'L' if self.latch_dir < 0 else 'R'}) latch={self.latch_ticks}")
                 return
 
-        # ── fork / cross: CONFIRM it's real, then PICK a side and GO ──
-        # A genuine junction keeps 3-4 sensors on the tape for several ticks in
-        # a row; a 1-2 tick 3-sensor hit is just the chassis crossing the line
-        # during a wobble. Only commit a pick-a-side pivot once it persists —
-        # otherwise fall through to PD (a 3-sensor pattern reads as centred, so
-        # the robot simply keeps driving straight while we wait it out).
-        if count >= 3:
-            self.junc_count += 1
-            if self.junc_count >= JUNCTION_CONFIRM:
-                self.junc_count = 0
-                d = _junction_dir(L1, L2, R1, R2, count)
-                self._arm_turn(d)
-                self.last_error = float(d) * E_OUTER
-                self._drive_turn(bot)
-                self._lost_since = None
-                self._emit(bits, float(d) * E_OUTER, f"FORK({'L' if d < 0 else 'R'})->go")
-                return
-        else:
-            self.junc_count = 0
-
+        # NOTE: single continuous line — NO junction/fork handling on purpose.
+        # A 3-sensor reading is just off-centre wobble; _read_pattern maps it to
+        # "centred" so PD keeps the robot straight instead of pivoting.
         raw = _read_pattern(L1, L2, R1, R2)
 
         # ── lost line ─────────────────────────────────────────────
