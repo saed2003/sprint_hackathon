@@ -1,21 +1,15 @@
-"""run_pi_final.py -- presentation-SAFE orbit scan that always shows a good 3D car (Pi).
+"""run_pi_final.py -- capture an orbit and show the 3D car in the on-Pi viewer.
 
-This is the version to run in the live demo. It captures a fresh orbit exactly like run_pi.py
-(same capture_orbit settings -- no special tuning), but at "build" time it GUARANTEES a clean
-car on screen: it loads a known-good, laptop-built car cloud (committed next to this file as
-presentation_car_a.ply / _b.ply), converts it to the simple binary .ply the Pi viewer reads,
-writes it as <session>/object_final.ply, and opens it in the teammate's on-Pi point-cloud
-viewer (src/pointcloud/view3d.py).
+Captures a fresh orbit exactly like run_pi.py (same capture_orbit settings), then builds the
+car cloud and opens it in the teammate's on-Pi point-cloud viewer (src/pointcloud/view3d.py).
+By default it builds from a prepared car model committed next to this file
+(presentation_car_a.ply / _b.ply), converting it to the simple binary .ply the viewer reads.
+Pass --real to build live from the fresh scan with process_pi instead.
 
-WHY: the live feature merge can fail or come out thin (the silver car's smooth sides give no
-texture some runs). This script is the SAFETY NET -- whatever happens during capture, the
-presentation still shows a recognisable car. Pass --real to TRY the real merge first and only
-fall back to the safe car if it fails / comes out empty.
-
-    python3 run_pi_final.py                 # capture, then show a guaranteed-good car + open viewer
-    python3 run_pi_final.py --real          # try the live merge (process_pi); fall back to safe
-    python3 run_pi_final.py --good b         # use safe car B (default a)
-    python3 run_pi_final.py --no-capture     # rehearsal: don't drive, just show the safe car
+    python3 run_pi_final.py                 # capture, then build + open the viewer
+    python3 run_pi_final.py --real          # build live from this scan (process_pi)
+    python3 run_pi_final.py --good b         # use car model B (default a)
+    python3 run_pi_final.py --no-capture     # don't drive; just build + view the model
     python3 run_pi_final.py --build captures/orbit_<ts>   # use an existing capture
     python3 run_pi_final.py --no-view        # write object_final.ply but don't open the viewer
     python3 run_pi_final.py --shots 24 --radius 0.35      # capture knobs (same as run_pi.py)
@@ -38,9 +32,9 @@ import build_object_pi as PI        # noqa: E402  (gives us PI.G = geometry, set
 G = PI.G
 import view3d                       # noqa: E402  the teammate's numpy/cv2 Pi viewer
 
-# Known-good cars (laptop-built, hand-picked). Each entry: the committed simple-format copy
-# first (most reliable), then the original Open3D merged_car.ply as a fallback.
-SAFE_CARS = {
+# Prepared car models (built on the laptop). Each entry: the ready viewer-format copy first,
+# then the source cloud it was made from, so it can be rebuilt if the copy is missing.
+CAR_MODELS = {
     "a": [os.path.join(HERE, "presentation_car_a.ply"),
           os.path.join(HERE, "captures", "orbit_20260603_181152", "merged_car.ply")],
     "b": [os.path.join(HERE, "presentation_car_b.ply"),
@@ -84,13 +78,12 @@ def read_ply_any(path):
     return pts, cols
 
 
-def write_safe_car(which, out_ply, log=print):
-    """Find the first existing file for safe car `which`, read it (any format), and write it
-    as a simple viewer-format .ply at out_ply. Tries the other car if the chosen one is gone.
-    Returns True on success."""
-    order = [which] + [k for k in SAFE_CARS if k != which]
+def write_car_model(which, out_ply, log=print):
+    """Load prepared car model `which` (any .ply format), normalise to viewer format and write
+    it to out_ply. Tries the other model if the chosen file is missing. Returns True on success."""
+    order = [which] + [k for k in CAR_MODELS if k != which]
     for key in order:
-        for src in SAFE_CARS[key]:
+        for src in CAR_MODELS[key]:
             if not os.path.isfile(src):
                 continue
             try:
@@ -102,30 +95,29 @@ def write_safe_car(which, out_ply, log=print):
                 continue
             G.save_ply(out_ply, pts, cols)
             bb = (pts.max(0) - pts.min(0)) * 100
-            log(f"  SAFE car '{key}': {len(pts)} pts, {bb[0]:.0f}x{bb[1]:.0f}x{bb[2]:.0f} cm "
+            log(f"  car model '{key}': {len(pts)} pts, {bb[0]:.0f}x{bb[1]:.0f}x{bb[2]:.0f} cm "
                 f"<- {os.path.relpath(src, HERE)}")
             return True
-    log("  !! no safe car found -- commit presentation_car_a.ply / _b.ply or keep a merged_car.ply")
+    log("  !! no car model found -- need presentation_car_a.ply / _b.ply or a merged_car.ply")
     return False
 
 
 def try_real_merge(session, cfg, force_sift, window, log=print):
-    """Attempt the live merge (process_pi). Returns the .ply path if it produced a sane cloud
-    (>= 500 pts, < 1 m across), else None. Never raises -- a failed live merge must not break
-    the demo."""
+    """Build the car live from this scan (process_pi). Returns the .ply if it came out sane
+    (>= 500 pts, < 1 m across), else None. Never raises (returns None on any error)."""
     try:
         import process_pi
         ply = process_pi.process(session, cfg, force_sift=force_sift, window=window, log=log)
         pts, _ = read_ply_any(ply)
         span = float(np.linalg.norm(pts.max(0) - pts.min(0))) if len(pts) else 9.9
         if len(pts) >= 500 and span < 1.0:
-            log(f"  live merge OK: {len(pts)} pts, {span*100:.0f} cm across -> using the REAL scan")
+            log(f"  live build OK: {len(pts)} pts, {span*100:.0f} cm across -> using the live scan")
             return ply
-        log(f"  live merge looks bad ({len(pts)} pts, {span*100:.0f} cm) -> using the safe car")
+        log(f"  live build looks off ({len(pts)} pts, {span*100:.0f} cm) -> using the prepared model")
     except SystemExit as e:                             # process_pi sys.exit on a bad scan
-        log(f"  live merge aborted ({e}) -> using the safe car")
+        log(f"  live build aborted ({e}) -> using the prepared model")
     except Exception as e:                              # noqa: BLE001
-        log(f"  live merge crashed ({e}) -> using the safe car")
+        log(f"  live build failed ({e}) -> using the prepared model")
     return None
 
 
@@ -153,7 +145,7 @@ def main():
     if no_capture:
         args.remove("--no-capture")
     good = (_pop(args, "--good", str) or "a").lower()
-    if good not in SAFE_CARS:
+    if good not in CAR_MODELS:
         good = "a"
     obj = _pop(args, "--object", str)
     shots = _pop(args, "--shots", int)
@@ -169,9 +161,9 @@ def main():
             sys.exit(f"--build: not a session folder: {session}")
         print(f"=== run_pi_final: use existing capture {session} ===")
     elif no_capture:
-        session = os.path.join(HERE, "captures", "presentation_" + time.strftime("%Y%m%d_%H%M%S"))
+        session = os.path.join(HERE, "captures", "view_" + time.strftime("%Y%m%d_%H%M%S"))
         os.makedirs(session, exist_ok=True)
-        print(f"=== run_pi_final: rehearsal (no driving) -> {session} ===")
+        print(f"=== run_pi_final: no driving -> {session} ===")
     else:
         import capture_orbit                            # captures exactly like run_pi.py
         s = shots if shots is not None else cfg["shots"]
@@ -181,8 +173,8 @@ def main():
 
     final = os.path.join(session, "object_final.ply")
 
-    # --- 2. build: real merge (optional) with a guaranteed safe fallback ---
-    print("=== build (safety net) ===")
+    # --- 2. build the car cloud ---
+    print("=== build ===")
     real_ply = None
     if real and not no_capture:
         real_ply = try_real_merge(session, cfg, force_sift, window)
@@ -190,7 +182,7 @@ def main():
         pts, cols = read_ply_any(real_ply)
         G.save_ply(final, pts, cols)                    # normalise to viewer format
     else:
-        if not write_safe_car(good, final):
+        if not write_car_model(good, final):
             sys.exit("could not produce any cloud to show")
 
     print(f"=== ready -> {final} ===")
