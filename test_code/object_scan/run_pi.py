@@ -62,6 +62,7 @@ def main():
     obj = _pop(args, '--object', str)
     shots = _pop(args, '--shots', int)
     radius = _pop(args, '--radius', float)
+    degrees = _pop(args, '--degrees', float) or 360.0
     window = _pop(args, '--win', int) or 3
     build_only = _pop(args, '--build', str)
     cfg = config.select(obj) if obj else config.DEFAULT
@@ -74,8 +75,8 @@ def main():
         import capture_orbit
         s = shots if shots is not None else cfg['shots']
         r = radius if radius is not None else cfg['radius']
-        print(f"=== capture: orbit {cfg['name']}  (shots={s}, R={r * 100:.0f}cm) ===")
-        session = capture_orbit.capture(shots=s, radius=r)
+        print(f"=== capture: orbit {cfg['name']}  (shots={s}, R={r * 100:.0f}cm, {degrees:.0f}°) ===")
+        session = capture_orbit.capture(shots=s, radius=r, degrees=degrees)
     print(f'=== merge on the Pi -> .ply ===')
     ply = merge_pi(session, cfg, force_sift=force_sift, window=window)
     print(f'\nDONE -> {ply}')

@@ -21,7 +21,10 @@ DB5 = dict(
     key="db5",
     shape="car",                 # selects the synthetic stand-in in _synth_test.py
     radius=0.35,                 # camera-to-car distance (m); car is ~17 cm so 0.35 frames it well
-    shots=24,                    # views around the car (15 deg steps -> heavy overlap)
+    shots=36,                    # views around the car (10 deg steps). MORE shots = SMALLER step
+                                 # = more overlap between consecutive views = more of them
+                                 # feature-register = a fuller car (the smooth silver sides need
+                                 # the overlap). Was 24 (15 deg); raise to 48 for even finer.
     zmin=0.22, zmax=0.50,        # depth gate: brackets a 17-cm car at ~35 cm (end-on it's deeper)
     crop=0.13,                   # half-size (m) of the keep-box around the car centroid
     voxel=0.0015,                # 1.5 mm — fine enough for panel/wheel detail

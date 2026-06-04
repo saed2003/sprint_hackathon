@@ -80,6 +80,21 @@ radius** (drives in/out to keep ~40 cm), so open-loop drift matters less. If the
 comes out mirrored, rebuild with `--dir -1`; flip `PAN_SIGN` in `capture_orbit.py` if the
 camera turns away from the figure.
 
+**Step size & total rotation (why a scan can come out "one-sided").** The Pi feature merge
+only places shots that share enough **texture** with a neighbour; the silver car's smooth
+sides give almost none, so whole arcs drop and you see ~one side (≈140°) instead of the
+whole car. Two levers fight this, both now wired in:
+- **Smaller steps = more overlap.** `step = 360°/shots`, so **more `shots` = smaller step**.
+  The default is now **36 shots (~10°/step)**; try `--shots 48` (~7.5°) for the silver car.
+  Consecutive views then overlap enough that the textured arcs chain further around.
+- **Bounded rotation.** The orbit used to drive by *vision-measured* angle and could run on
+  to **500°+** when that reading under-counted. It now stops at the **planned step count for
+  `--degrees` (default 360°)**, so one clean revolution — no runaway. `python3 run_pi.py
+  --shots 48 --degrees 360`. (Driving **slower** also helps: less slip/blur → more features,
+  but lowering `ROTATE_SPEED`/`FORWARD_SPEED` means **re-running `--calibrate-turn/-fwd`**.)
+- Best of all: **light the car diffusely / kill the glare** on the flat silver — texture is
+  the real limiter, and a well-lit scan registers nearly every shot (one example hit 43/46).
+
 ## Files
 
 | File | Role |
@@ -94,8 +109,9 @@ camera turns away from the figure.
 | `capture_session.py` | turntable/hand-stepped capturer (own RealSense pipeline, **aligned colour** → coloured model) |
 | `capture_orbit.py` | robot stop-and-shoot orbit (Pi): pan-servo aim + radius-hold + turn-drive-turn stepping |
 | `build_object_pi.py` | the friend's **pure-numpy/cv2** feature merge — runs on the **Pi** (no Open3D) |
-| **`run_pi.py` / `run_pi2.py` / `run_pi_template.py`** | **all-on-the-Pi** capture+merge → `.ply` (no Open3D, no mesh) — see below |
+| **`run_pi.py` / `process_pi.py` / `run_pi_final.py` / `run_pi2.py` / `run_pi_template.py`** | **all-on-the-Pi** capture+merge → `.ply` (no Open3D) — see below |
 | `db5_template.npz` | canonical DB5 cloud for `run_pi_template.py` (made once on the laptop) |
+| `presentation_car_a.ply` / `presentation_car_b.ply` | committed known-good cars (viewer-format) — the `run_pi_final.py` safety net |
 | `_synth_test.py` | renders a synthetic Teemo-scale scan so you can test the whole build with no camera |
 
 ## Run it ALL on the Pi (no Open3D) — `run_pi*.py`
@@ -109,6 +125,7 @@ They are new, isolated files — they change nothing else and never touch the ru
 |---|---|---|
 | `run_pi.py` | the friend's **feature merge** (fast, coarse) | `object_pi.ply` |
 | **`process_pi.py`** ⭐ | **post-process pipeline** (use this after `run_pi`). Reuses the proven feature poses, then **cuts the floor "stalk"** under the car (height band), **fuses duplicate/overlapping views by voxel-mean** (averages noise instead of smearing), and **denoises** (statistical-outlier + largest-cluster). `--full` also screw-bridges the texture-less shots for more coverage. | `object_clean.ply` |
+| **`run_pi_final.py`** 🎬 | **presentation-SAFE.** Captures like `run_pi`, then at build **guarantees a good car on screen**: writes a committed known-good car (`presentation_car_a/b.ply`) as `object_final.ply` and **opens the Pi viewer** (`view3d.py`). `--real` tries the live merge first and only falls back to the safe car if it fails/comes out empty. The demo never shows a broken cloud. | `object_final.ply` (+ opens viewer) |
 | `run_pi2.py` | pure-numpy **point-to-plane ICP** refine + **symmetry-fold veto** + **known-model stand-crop** (drops the rotationally-symmetric stand using the car's known height, so ICP/features lock on the distinctive car). `--relax-iters` pose-graph relax is **off by default** (it spread the cloud). | `object_pi_hq.ply` (car-only) |
 | `run_pi_template.py` | **model-to-frame**: snaps each view onto a saved canonical **template** with **leeway** (trimmed ICP + orientation search + drops non-conforming views — because captures vary) | `object_pi_tpl.ply` |
 
@@ -118,10 +135,20 @@ python3 run_pi.py                       # capture + feature merge -> object_pi.p
 python3 process_pi.py                   # ⭐ clean the newest scan -> object_clean.ply
 python3 process_pi.py --full            # ...also screw-bridge feature-less shots (more coverage, softer)
 python3 process_pi.py captures/orbit_<ts> --sift --win 3 --voxel 0.003   # tune
+python3 run_pi_final.py                 # 🎬 capture -> guaranteed-good car -> open the 3D viewer
+python3 run_pi_final.py --real          #    ...try the live merge first, fall back to safe if it's bad
+python3 run_pi_final.py --no-capture    #    rehearsal: no driving, just show the safe car (--good a|b)
 python3 run_pi2.py                      # --reg-voxel | --icp-iters | --win | --relax-iters | --keep-stand
 python3 run_pi_template.py              # --leeway 0.03 | --template db5_template.npz | --fit-min 0.45
 python3 run_pi2.py --build captures/orbit_<ts>     # any of them: merge an existing scan, no robot
 ```
+
+> 🎬 **`run_pi_final.py` is the demo button.** The committed `presentation_car_a.ply` (sleek,
+> 56k pts) and `presentation_car_b.ply` (denser, 85k pts) are the laptop-built `merged_car.ply`
+> cars **converted to the simple binary format `view3d.py` reads** (Open3D writes
+> double-xyz + normals, which the Pi viewer can't parse — `run_pi_final` converts any `.ply` on
+> the way in). The viewer opens an OpenCV window over **VNC / HDMI**; with no display it saves a
+> still PNG instead. Use `--real` once you trust the live scan; default is always the safe car.
 
 > **Why `process_pi.py` beats the raw `run_pi` cloud (on `orbit_20260604_084052`):** the bare
 > feature merge places ~16 of 41 shots (the silver car's smooth sides give no features) and keeps a
