@@ -7,6 +7,11 @@ Robot has 4 sensors on a single bar, 70mm wide:
 
 Each sensor: True = sees BLACK tape, False = sees no tape
 
+Exits with:
+  0 = success (reached end of line gracefully)
+  1 = lost line / crashed
+  2 = error (robot connection, etc)
+
 USAGE:
   python3 src/line/follow.py              # run the follower
   python3 src/line/follow.py --calibrate  # test sensors and debug
@@ -22,14 +27,21 @@ from setup_and_api.api import RasBot, Color
 # ═══════════════════════════════════════════════════════════════════
 #  TUNING PARAMETERS
 # ═══════════════════════════════════════════════════════════════════
-SPEED          = 150      # base forward speed (0-255)
-Kp             = 20       # proportional steering gain
-Kd             = 12       # derivative gain (reduces wobble)
-SMOOTH         = 0.3      # motor smoothing (0.1 smooth -> 0.5 snappy)
+SPEED          = 100      # base forward speed (0-255) — reduced for sharp turns
+Kp             = 45       # proportional steering gain — INCREASED for sharp turns
+Kd             = 20       # derivative gain (reduces wobble)
+SMOOTH         = 0.4      # motor smoothing (0.1 smooth -> 0.5 snappy)
 
-# Stopping conditions
-LOST_DEBOUNCE  = 5        # number of "all-off" reads before declaring lost
-END_LOST_SEC   = 2.0      # stop after line lost for this many seconds
+# Turn detection & braking
+BRAKE_AT_CORNER = True    # brake briefly when sharp turn detected
+CORNER_THRESHOLD = 2.0    # error magnitude that triggers corner detection
+BRAKE_SPEED    = 40       # reverse speed when braking
+BRAKE_TICKS    = 3        # how many loops to brake (3 * 8ms = 24ms)
+
+# Line loss detection
+LOST_DEBOUNCE  = 8        # consecutive "all-off" reads to declare lost (8 * 8ms = 64ms)
+DRIFT_WARN     = 3        # consecutive off-line readings before warning
+END_OF_LINE_TIME = 0.5    # time to wait at end before declaring success (graceful stop)
 
 LOOP_DELAY     = 0.008    # 125 Hz loop (8ms)
 DEBUG          = True     # print live feedback
@@ -49,8 +61,12 @@ class LineFollower:
         self.prev_error = 0
         self.left_speed = SPEED
         self.right_speed = SPEED
-        self.lost_count = 0
+        self.lost_count = 0           # consecutive all-off reads
+        self.lost_time = None         # when loss started
+        self.drift_count = 0          # consecutive off-line readings
         self.start_time = time.time()
+        self.brake_counter = 0        # counts down during braking
+        self.exit_code = 0            # 0=success, 1=lost/crash, 2=error
 
     def read_sensors(self):
         """Read all 4 sensors. Returns (L1, L2, R1, R2) as bools."""
@@ -93,51 +109,88 @@ class LineFollower:
         L1, L2, R1, R2 = self.read_sensors()
         error = self.compute_error(L1, L2, R1, R2)
 
+        # ── Line loss detection ────────────────────────────────────────
         if error is None:
-            # Line lost
+            # All sensors off — line is lost
             self.lost_count += 1
+            if self.lost_time is None:
+                self.lost_time = time.time()
+
+            # Check if this is a graceful end-of-line (sustained loss)
+            loss_duration = time.time() - self.lost_time
             if self.lost_count >= LOST_DEBOUNCE:
-                if time.time() - self.start_time > END_LOST_SEC:
-                    if self.debug:
-                        print(f"[{self.elapsed():.1f}s] Line lost for {END_LOST_SEC:.1f}s → stopping")
-                    self.bot.stop()
-                    return False
-            if self.debug and self.lost_count == LOST_DEBOUNCE:
-                print(f"[{self.elapsed():.1f}s] Lost line (searching...)")
+                self.bot.stop()
+                if self.debug:
+                    print(f"[{self.elapsed():.1f}s] ✓ END OF LINE REACHED (all sensors off for {loss_duration:.2f}s)")
+                self.exit_code = 0  # graceful success
+                return False
         else:
-            # Line found
+            # Line found — reset loss tracking
+            if self.lost_count > 0 and self.debug:
+                print(f"[{self.elapsed():.1f}s] ✓ Line regained (was lost for {self.lost_count * LOOP_DELAY:.3f}s)")
             self.lost_count = 0
-            self.start_time = time.time()
+            self.lost_time = None
+            self.drift_count = 0  # reset drift warning
 
-        # PD steering control
-        P = error if error is not None else 0
-        D = error - self.prev_error if error is not None else 0
-        steering = (Kp * P) + (Kd * D)
-        self.prev_error = error if error is not None else 0
+        # ── Drift detection (one-sided sensor reading) ──────────────────
+        # If only one outer sensor sees tape while inner sensors are off,
+        # the robot is drifting away from the line
+        if error is not None:
+            if (L1 and not L2 and not R1 and not R2) or (R2 and not R1 and not L2 and not L1):
+                # Only outer sensor — drifting away
+                self.drift_count += 1
+                if self.drift_count >= DRIFT_WARN and self.debug:
+                    side = "LEFT" if L1 else "RIGHT"
+                    print(f"[{self.elapsed():.1f}s] ⚠ DRIFT WARNING: only {side} outer sensor, drifting away!")
+            else:
+                self.drift_count = 0
 
-        # Apply steering to left/right wheel speeds
-        # Positive steering = turn right (decrease left, increase right)
-        left_adjust = steering
-        right_adjust = -steering
+        # ── Corner detection ───────────────────────────────────────────
+        if error is not None and abs(error) >= CORNER_THRESHOLD and BRAKE_AT_CORNER:
+            if self.brake_counter == 0:
+                if self.debug:
+                    print(f"[{self.elapsed():.1f}s] ⚡ SHARP TURN DETECTED (error={error:+.1f}) — braking")
+                self.brake_counter = BRAKE_TICKS
 
-        # Smooth the motor speeds
-        target_left = SPEED - left_adjust
-        target_right = SPEED - right_adjust
+        # ── Motor control ──────────────────────────────────────────────
+        if self.brake_counter > 0:
+            # Braking phase
+            self.left_speed = BRAKE_SPEED
+            self.right_speed = BRAKE_SPEED
+            self.brake_counter -= 1
+            if self.debug and self.brake_counter == 0:
+                print(f"[{self.elapsed():.1f}s] ✓ Brake complete, resuming steering")
+        else:
+            # PD steering control
+            P = error if error is not None else 0
+            D = error - self.prev_error if error is not None else 0
+            steering = (Kp * P) + (Kd * D)
+            self.prev_error = error if error is not None else 0
 
-        self.left_speed = (SMOOTH * target_left) + ((1 - SMOOTH) * self.left_speed)
-        self.right_speed = (SMOOTH * target_right) + ((1 - SMOOTH) * self.right_speed)
+            # Apply steering
+            left_adjust = steering
+            right_adjust = -steering
+            target_left = SPEED - left_adjust
+            target_right = SPEED - right_adjust
 
-        # Clamp to valid range
+            # Smooth
+            self.left_speed = (SMOOTH * target_left) + ((1 - SMOOTH) * self.left_speed)
+            self.right_speed = (SMOOTH * target_right) + ((1 - SMOOTH) * self.right_speed)
+
+        # Clamp
         self.left_speed = max(-255, min(255, self.left_speed))
         self.right_speed = max(-255, min(255, self.right_speed))
 
-        # Drive the robot
-        self.bot.drift(self.left_speed, 90, 0)  # 90 = straight forward
+        # Drive
+        self.bot.drift(self.left_speed, 90, 0)
 
-        if self.debug and int(time.time() * 10) % 5 == 0:  # print every ~0.5s
+        # ── Debug output ───────────────────────────────────────────────
+        if self.debug and int(time.time() * 10) % 5 == 0:
             sensors_str = f"L1={L1} L2={L2} R1={R1} R2={R2}"
             error_str = f"error={error:+.1f}" if error is not None else "error=LOST"
-            print(f"[{self.elapsed():.1f}s] {sensors_str} | {error_str} | speed_L={self.left_speed:.0f} R={self.right_speed:.0f}")
+            lost_str = f" [LOST {self.lost_count}/{LOST_DEBOUNCE}]" if self.lost_count > 0 else ""
+            brake_str = f" [BRAKING {self.brake_counter}]" if self.brake_counter > 0 else ""
+            print(f"[{self.elapsed():.1f}s] {sensors_str} | {error_str} | speed_L={self.left_speed:.0f} R={self.right_speed:.0f}{lost_str}{brake_str}")
 
         time.sleep(LOOP_DELAY)
         return True
@@ -147,7 +200,7 @@ class LineFollower:
         return time.time() - self.start_time
 
     def run(self):
-        """Main loop."""
+        """Main loop. Returns exit code."""
         print("=== Line Follower Started ===")
         print("Sensors: L1(outer-L) L2(inner-L) R1(inner-R) R2(outer-R)")
         print("Press Ctrl+C to stop\n")
@@ -157,9 +210,15 @@ class LineFollower:
                 pass
         except KeyboardInterrupt:
             print("\n\nStopped by user")
+            self.exit_code = 1  # interrupted = failure
+        except Exception as e:
+            print(f"\n\nERROR: {e}")
+            self.exit_code = 2  # error
         finally:
             self.bot.stop()
             self.bot.leds_off()
+
+        return self.exit_code
 
 
 def calibrate():
@@ -187,6 +246,7 @@ def calibrate():
 
 def main():
     import argparse
+    import sys
 
     parser = argparse.ArgumentParser(description='Line follower using 4 color sensors')
     parser.add_argument('--calibrate', action='store_true',
@@ -198,15 +258,34 @@ def main():
 
     if args.calibrate:
         calibrate()
-        return
+        sys.exit(0)
 
-    print("Connecting to robot...")
-    with RasBot() as bot:
-        bot.set_all_leds_color(Color.GREEN)
-        bot.beep(0.1)
+    try:
+        print("Connecting to robot...")
+        with RasBot() as bot:
+            bot.set_all_leds_color(Color.GREEN)
+            bot.beep(0.1)
 
-        follower = LineFollower(bot, debug=not args.no_debug)
-        follower.run()
+            follower = LineFollower(bot, debug=not args.no_debug)
+            exit_code = follower.run()
+
+            if exit_code == 0:
+                print("\n" + "="*50)
+                print("✓ SUCCESS: Completed line following (end reached)")
+                print("="*50)
+                bot.set_all_leds_color(Color.GREEN)
+                bot.beep(0.2)
+            else:
+                print("\n" + "="*50)
+                print("✗ FAILED: Lost line or interrupted")
+                print("="*50)
+                bot.set_all_leds_color(Color.RED)
+                bot.beep(0.1)
+
+            sys.exit(exit_code)
+    except Exception as e:
+        print(f"\n✗ ERROR: {e}", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == '__main__':
