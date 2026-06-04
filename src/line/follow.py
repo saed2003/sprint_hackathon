@@ -27,10 +27,14 @@ from setup_and_api.api import RasBot, Color
 # ═══════════════════════════════════════════════════════════════════
 #  TUNING PARAMETERS
 # ═══════════════════════════════════════════════════════════════════
-SPEED          = 110      # base forward speed (0-255) — balanced for responsive steering
-Kp             = 40       # proportional steering gain — moderate for smooth corners
-Kd             = 18       # derivative gain (reduces wobble)
-SMOOTH         = 0.4      # motor smoothing (0.1 smooth -> 0.5 snappy)
+SPEED          = 120      # base forward speed (0-255)
+Kp             = 24       # proportional steering gain
+Kd             = 14       # derivative gain (reduces wobble)
+SMOOTH         = 0.35     # motor smoothing (0.1 smooth -> 0.5 snappy)
+
+# Sharp-corner pivot (when only the outer sensor sees tape, spin in place)
+PIVOT_FWD      = 130      # outer wheel forward during a pivot
+PIVOT_REV      = -85      # inner wheel reverse during a pivot
 
 # Turn detection & braking
 BRAKE_AT_CORNER = False   # DISABLED — just use aggressive steering instead
@@ -196,6 +200,17 @@ class LineFollower:
             self.brake_counter -= 1
             if self.debug and self.brake_counter == 0:
                 print(f"[{self.elapsed():.1f}s] ✓ Brake complete, resuming steering")
+        elif not self.search_active and error is not None and abs(error) >= 2.5:
+            # SHARP CORNER: only the outer sensor sees tape — pivot in place.
+            # PD alone is too gentle for a 90° turn; spin so the inner sensors
+            # swing back onto the tape.
+            self.prev_error = error
+            if error < 0:   # tape hard-left → pivot left
+                self.left_speed = PIVOT_REV
+                self.right_speed = PIVOT_FWD
+            else:           # tape hard-right → pivot right
+                self.left_speed = PIVOT_FWD
+                self.right_speed = PIVOT_REV
         elif not self.search_active and error is not None:
             # Normal PD steering control (only if not searching and line found)
             P = error
@@ -221,8 +236,12 @@ class LineFollower:
         self.left_speed = max(-255, min(255, self.left_speed))
         self.right_speed = max(-255, min(255, self.right_speed))
 
-        # Drive
-        self.bot.drift(self.left_speed, 90, 0)
+        # Drive — differential: left side wheels, right side wheels independently.
+        # (drift() ignores right_speed entirely, so it could never steer — this is
+        #  the same low-level call best_follow.py uses.)
+        L = int(self.left_speed)
+        R = int(self.right_speed)
+        self.bot._apply_motors(L, L, R, R)
 
         # ── Debug output ───────────────────────────────────────────────
         if self.debug and int(time.time() * 10) % 5 == 0:
