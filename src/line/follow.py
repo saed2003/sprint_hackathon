@@ -38,10 +38,12 @@ CORNER_THRESHOLD = 3.0    # error magnitude that triggers corner detection
 BRAKE_SPEED    = 20       # gentle reverse speed when braking
 BRAKE_TICKS    = 1        # minimal braking (just 1 tick = 8ms)
 
-# Line loss detection
-LOST_DEBOUNCE  = 8        # consecutive "all-off" reads to declare lost (8 * 8ms = 64ms)
+# Line loss & recovery
+LOST_DEBOUNCE  = 6        # consecutive "all-off" reads to trigger search (6 * 8ms = 48ms)
+SEARCH_MAX_TIME = 2.0     # max time to search for lost line before giving up (true end)
+SEARCH_SPIN_SPEED = 80    # speed to spin while searching for line
+RECOVERY_ATTEMPTS = 3     # number of times to try recovering before declaring end
 DRIFT_WARN     = 3        # consecutive off-line readings before warning
-END_OF_LINE_TIME = 0.5    # time to wait at end before declaring success (graceful stop)
 
 LOOP_DELAY     = 0.008    # 125 Hz loop (8ms)
 DEBUG          = True     # print live feedback
@@ -67,6 +69,9 @@ class LineFollower:
         self.start_time = time.time()
         self.brake_counter = 0        # counts down during braking
         self.exit_code = 0            # 0=success, 1=lost/crash, 2=error
+        self.recovery_attempts = 0    # times we've lost and regained line
+        self.search_active = False    # currently searching for line
+        self.search_direction = 1     # +1 = spin right, -1 = spin left
 
     def read_sensors(self):
         """Read all 4 sensors. Returns (L1, L2, R1, R2) as bools."""
@@ -109,25 +114,42 @@ class LineFollower:
         L1, L2, R1, R2 = self.read_sensors()
         error = self.compute_error(L1, L2, R1, R2)
 
-        # ── Line loss detection ────────────────────────────────────────
+        # ── Line loss detection & recovery ─────────────────────────────
         if error is None:
             # All sensors off — line is lost
             self.lost_count += 1
             if self.lost_time is None:
                 self.lost_time = time.time()
 
-            # Check if this is a graceful end-of-line (sustained loss)
             loss_duration = time.time() - self.lost_time
-            if self.lost_count >= LOST_DEBOUNCE:
+
+            # Trigger search when line lost for LOST_DEBOUNCE
+            if self.lost_count >= LOST_DEBOUNCE and not self.search_active:
+                self.search_active = True
+                self.search_direction = 1  # try right first
+                if self.debug:
+                    print(f"[{self.elapsed():.1f}s] 🔍 Line lost! Starting search (recovery attempt #{self.recovery_attempts + 1})")
+
+            # Give up if searching for too long
+            if self.search_active and loss_duration >= SEARCH_MAX_TIME:
                 self.bot.stop()
                 if self.debug:
-                    print(f"[{self.elapsed():.1f}s] ✓ END OF LINE REACHED (all sensors off for {loss_duration:.2f}s)")
+                    print(f"[{self.elapsed():.1f}s] ✓ SEARCH TIMEOUT — this is the END OF LINE")
                 self.exit_code = 0  # graceful success
                 return False
         else:
-            # Line found — reset loss tracking
-            if self.lost_count > 0 and self.debug:
+            # Line found!
+            if self.search_active:
+                # Successfully recovered during search
+                self.recovery_attempts += 1
+                if self.debug:
+                    print(f"[{self.elapsed():.1f}s] ✓ Line recovered! (recovery #{self.recovery_attempts})")
+                self.search_active = False
+                self.lost_count = 0
+                self.lost_time = None
+            elif self.lost_count > 0 and self.debug:
                 print(f"[{self.elapsed():.1f}s] ✓ Line regained (was lost for {self.lost_count * LOOP_DELAY:.3f}s)")
+
             self.lost_count = 0
             self.lost_time = None
             self.drift_count = 0  # reset drift warning
@@ -153,7 +175,11 @@ class LineFollower:
                 self.brake_counter = BRAKE_TICKS
 
         # ── Motor control ──────────────────────────────────────────────
-        if self.brake_counter > 0:
+        if self.search_active:
+            # Searching: spin in place to find the line
+            self.left_speed = SEARCH_SPIN_SPEED * self.search_direction
+            self.right_speed = -SEARCH_SPIN_SPEED * self.search_direction
+        elif self.brake_counter > 0:
             # Braking phase
             self.left_speed = BRAKE_SPEED
             self.right_speed = BRAKE_SPEED
@@ -189,8 +215,9 @@ class LineFollower:
             sensors_str = f"L1={L1} L2={L2} R1={R1} R2={R2}"
             error_str = f"error={error:+.1f}" if error is not None else "error=LOST"
             lost_str = f" [LOST {self.lost_count}/{LOST_DEBOUNCE}]" if self.lost_count > 0 else ""
+            search_str = f" [SEARCHING→{'R' if self.search_direction > 0 else 'L'}]" if self.search_active else ""
             brake_str = f" [BRAKING {self.brake_counter}]" if self.brake_counter > 0 else ""
-            print(f"[{self.elapsed():.1f}s] {sensors_str} | {error_str} | speed_L={self.left_speed:.0f} R={self.right_speed:.0f}{lost_str}{brake_str}")
+            print(f"[{self.elapsed():.1f}s] {sensors_str} | {error_str} | speed_L={self.left_speed:.0f} R={self.right_speed:.0f}{lost_str}{search_str}{brake_str}")
 
         time.sleep(LOOP_DELAY)
         return True
