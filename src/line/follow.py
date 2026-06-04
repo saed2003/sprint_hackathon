@@ -32,22 +32,22 @@ Kp             = 24       # proportional steering gain
 Kd             = 14       # derivative gain (reduces wobble)
 SMOOTH         = 0.35     # motor smoothing (0.1 smooth -> 0.5 snappy)
 
-# Sharp-corner pivot (when only the outer sensor sees tape, spin in place)
+# Corner turning — a corner shows up as 3-4 sensors lit (straights show 1-2).
+# When detected we PIVOT in place and commit (latch) to the turn for a bit so
+# the robot fully rounds the 90° bend instead of clipping it.
+CORNER_COUNT   = 3        # >= this many sensors lit = a corner (bend in the line)
 PIVOT_FWD      = 130      # outer wheel forward during a pivot
 PIVOT_REV      = -85      # inner wheel reverse during a pivot
+PIVOT_LATCH    = 45       # ticks committed to a corner turn (~0.36 s at 125 Hz)
+REACQUIRE_ERR  = 1.0      # |error| this small (with <=2 sensors) ends the turn
 
-# Turn detection & braking
-BRAKE_AT_CORNER = False   # DISABLED — just use aggressive steering instead
-CORNER_THRESHOLD = 3.0    # error magnitude that triggers corner detection
-BRAKE_SPEED    = 20       # gentle reverse speed when braking
-BRAKE_TICKS    = 1        # minimal braking (just 1 tick = 8ms)
-
-# Line loss & recovery
-LOST_DEBOUNCE  = 6        # consecutive "all-off" reads to trigger search (6 * 8ms = 48ms)
-SEARCH_MAX_TIME = 2.0     # max time to search for lost line before giving up (true end)
-SEARCH_SPIN_SPEED = 80    # speed to spin while searching for line
-RECOVERY_ATTEMPTS = 3     # number of times to try recovering before declaring end
-DRIFT_WARN     = 3        # consecutive off-line readings before warning
+# Lost-line recovery — REVERSE first (undo the overshoot), THEN spin to re-find.
+LOST_DEBOUNCE  = 5        # consecutive "all-off" reads before declaring lost
+REVERSE_TICKS  = 14       # back up this many ticks first (~0.11 s) to undo overshoot
+REVERSE_SPEED  = -95      # both wheels reverse while backing up
+SEARCH_SPIN_SPEED = 90    # speed to spin while searching for the line
+SEARCH_HALF_TIME = 0.7    # spin TOWARD the line's last heading for this long first
+SEARCH_MAX_TIME  = 2.2    # total spin budget; after this (both ways swept) = end of line
 
 LOOP_DELAY     = 0.008    # 125 Hz loop (8ms)
 DEBUG          = True     # print live feedback
@@ -64,194 +64,182 @@ class LineFollower:
     def __init__(self, bot, debug=True):
         self.bot = bot
         self.debug = debug
-        self.prev_error = 0
+        self.prev_error = 0.0
         self.left_speed = SPEED
         self.right_speed = SPEED
-        self.lost_count = 0           # consecutive all-off reads
-        self.lost_time = None         # when loss started
-        self.drift_count = 0          # consecutive off-line readings
         self.start_time = time.time()
-        self.brake_counter = 0        # counts down during braking
         self.exit_code = 0            # 0=success, 1=lost/crash, 2=error
-        self.recovery_attempts = 0    # times we've lost and regained line
-        self.search_active = False    # currently searching for line
-        self.search_direction = 1     # +1 = spin right, -1 = spin left
+        self.last_dir = 1             # which way the line last headed (+1 right, -1 left)
+        self._tick = 0
+
+        # corner-turn latch
+        self.latch_ticks = 0          # >0 = committed to a corner turn
+        self.latch_dir = 0            # +1 right, -1 left
+
+        # lost-line recovery state machine
+        self.lost_count = 0           # consecutive all-off reads
+        self.lost_phase = None        # None | 'reverse' | 'spin'
+        self.reverse_left = 0         # ticks of reverse remaining
+        self.search_dir = 1           # spin direction while searching
+        self.search_swept = False     # have we flipped to sweep the other way yet
+        self.search_start = 0.0       # when the spin began
 
     def read_sensors(self):
         """Read all 4 sensors. Returns (L1, L2, R1, R2) as bools."""
         return self.bot.read_line_sensors()
 
     def compute_error(self, L1, L2, R1, R2):
-        """
-        Convert sensor pattern to signed error value.
-        Negative = tape is LEFT, Positive = tape is RIGHT, None = all-off
-        """
-        # Both inner sensors see tape -> centered (error = 0)
-        if L2 and R1:
-            return 0.0
+        """Signed error for the FOLLOW state (1-2 sensors lit).
+        Negative = tape LEFT of centre, positive = tape RIGHT. None = all-off.
+        Corners (3-4 sensors) are handled separately, not here."""
+        if L2 and R1:                 return 0.0    # 0110 centred
+        if L2 and not R1:             return -1.0   # 0100 inner-left
+        if R1 and not L2:             return +1.0   # 0010 inner-right
+        if L1 and not L2:             return -3.0   # 1000 outer-left (far)
+        if R2 and not R1:             return +3.0   # 0001 outer-right (far)
+        return None                                  # 0000 lost
 
-        # 3 sensors active -> tape still on center side
-        if L1 and L2 and not R1:
-            return -1.5  # tape mostly left
-        if not L1 and L2 and R1:
-            return -0.5  # tape slightly left
-        if L2 and R1 and R2:
-            return +1.5  # tape mostly right
-        if L1 and not R1 and R1 and R2:
-            return +0.5  # tape slightly right
-
-        # Single sensor active
-        if L2 and not R1:
-            return -1.0  # left inner only
-        if R1 and not L2:
-            return +1.0  # right inner only
-        if L1 and not L2:
-            return -2.5  # left outer (sharp turn)
-        if R2 and not R1:
-            return +2.5  # right outer (sharp turn)
-
-        # All off -> lost
-        return None
-
-    def step(self):
-        """Run one control loop iteration. Returns True to continue, False to stop."""
-        L1, L2, R1, R2 = self.read_sensors()
-        error = self.compute_error(L1, L2, R1, R2)
-
-        # ── Line loss detection & recovery ─────────────────────────────
-        if error is None:
-            # All sensors off — line is lost
-            self.lost_count += 1
-            if self.lost_time is None:
-                self.lost_time = time.time()
-
-            loss_duration = time.time() - self.lost_time
-
-            # Trigger search when line lost for LOST_DEBOUNCE
-            if self.lost_count >= LOST_DEBOUNCE and not self.search_active:
-                self.search_active = True
-                self.search_direction = 1  # try right first
-                if self.debug:
-                    print(f"[{self.elapsed():.1f}s] 🔍 Line lost! Starting search (recovery attempt #{self.recovery_attempts + 1})")
-
-            # Give up if searching for too long
-            if self.search_active and loss_duration >= SEARCH_MAX_TIME:
-                self.bot.stop()
-                if self.debug:
-                    print(f"[{self.elapsed():.1f}s] ✓ SEARCH TIMEOUT — this is the END OF LINE")
-                self.exit_code = 0  # graceful success
-                return False
-        else:
-            # Line found!
-            if self.search_active:
-                # Successfully recovered during search
-                self.recovery_attempts += 1
-                if self.debug:
-                    print(f"[{self.elapsed():.1f}s] ✓ Line recovered! (recovery #{self.recovery_attempts})")
-                self.search_active = False
-                self.lost_count = 0
-                self.lost_time = None
-            elif self.lost_count > 0 and self.debug:
-                print(f"[{self.elapsed():.1f}s] ✓ Line regained (was lost for {self.lost_count * LOOP_DELAY:.3f}s)")
-
-            self.lost_count = 0
-            self.lost_time = None
-            self.drift_count = 0  # reset drift warning
-
-        # ── Drift detection (one-sided sensor reading) ──────────────────
-        # If only one outer sensor sees tape while inner sensors are off,
-        # the robot is drifting away from the line
-        if error is not None:
-            if (L1 and not L2 and not R1 and not R2) or (R2 and not R1 and not L2 and not L1):
-                # Only outer sensor — drifting away
-                self.drift_count += 1
-                if self.drift_count >= DRIFT_WARN and self.debug:
-                    side = "LEFT" if L1 else "RIGHT"
-                    print(f"[{self.elapsed():.1f}s] ⚠ DRIFT WARNING: only {side} outer sensor, drifting away!")
-            else:
-                self.drift_count = 0
-
-        # ── Corner detection ───────────────────────────────────────────
-        if error is not None and abs(error) >= CORNER_THRESHOLD and BRAKE_AT_CORNER:
-            if self.brake_counter == 0:
-                if self.debug:
-                    print(f"[{self.elapsed():.1f}s] ⚡ SHARP TURN DETECTED (error={error:+.1f}) — braking")
-                self.brake_counter = BRAKE_TICKS
-
-        # ── Motor control ──────────────────────────────────────────────
-        if self.search_active:
-            # Searching: spin in place to find the line, watch for any sensor activation
-            # When spinning, if ANY sensor sees tape, stop spinning and resume following
-            if error is not None:
-                # Line found during search! Stop spinning and resume normal steering
-                if self.debug:
-                    print(f"[{self.elapsed():.1f}s] ✓ Line found during search! Resuming (direction={'LEFT' if self.search_direction < 0 else 'RIGHT'})")
-                self.search_active = False
-                self.prev_error = error  # Reset derivative to avoid spike
-                # Fall through to normal steering below
-            else:
-                # Still searching - spin to explore
-                self.left_speed = SEARCH_SPIN_SPEED * self.search_direction
-                self.right_speed = -SEARCH_SPIN_SPEED * self.search_direction
-        elif self.brake_counter > 0:
-            # Braking phase
-            self.left_speed = BRAKE_SPEED
-            self.right_speed = BRAKE_SPEED
-            self.brake_counter -= 1
-            if self.debug and self.brake_counter == 0:
-                print(f"[{self.elapsed():.1f}s] ✓ Brake complete, resuming steering")
-        elif not self.search_active and error is not None and abs(error) >= 2.5:
-            # SHARP CORNER: only the outer sensor sees tape — pivot in place.
-            # PD alone is too gentle for a 90° turn; spin so the inner sensors
-            # swing back onto the tape.
-            self.prev_error = error
-            if error < 0:   # tape hard-left → pivot left
-                self.left_speed = PIVOT_REV
-                self.right_speed = PIVOT_FWD
-            else:           # tape hard-right → pivot right
-                self.left_speed = PIVOT_FWD
-                self.right_speed = PIVOT_REV
-        elif not self.search_active and error is not None:
-            # Normal PD steering control (only if not searching and line found)
-            P = error
-            D = error - self.prev_error
-            steering = (Kp * P) + (Kd * D)
-            self.prev_error = error
-
-            # Apply steering
-            left_adjust = steering
-            right_adjust = -steering
-            target_left = SPEED - left_adjust
-            target_right = SPEED - right_adjust
-
-            # Smooth
-            self.left_speed = (SMOOTH * target_left) + ((1 - SMOOTH) * self.left_speed)
-            self.right_speed = (SMOOTH * target_right) + ((1 - SMOOTH) * self.right_speed)
-        else:
-            # Not searching, no line found — coast forward slowly to find it
-            self.left_speed = SPEED * 0.5
-            self.right_speed = SPEED * 0.5
-
-        # Clamp
-        self.left_speed = max(-255, min(255, self.left_speed))
-        self.right_speed = max(-255, min(255, self.right_speed))
-
-        # Drive — differential: left side wheels, right side wheels independently.
-        # (drift() ignores right_speed entirely, so it could never steer — this is
-        #  the same low-level call best_follow.py uses.)
-        L = int(self.left_speed)
-        R = int(self.right_speed)
+    # ── low-level helpers ────────────────────────────────────────────
+    def _drive(self):
+        """Push current left/right speeds to the wheels (true differential)."""
+        L = max(-255, min(255, int(self.left_speed)))
+        R = max(-255, min(255, int(self.right_speed)))
         self.bot._apply_motors(L, L, R, R)
 
-        # ── Debug output ───────────────────────────────────────────────
-        if self.debug and int(time.time() * 10) % 5 == 0:
-            sensors_str = f"L1={L1} L2={L2} R1={R1} R2={R2}"
-            error_str = f"error={error:+.1f}" if error is not None else "error=LOST"
-            lost_str = f" [LOST {self.lost_count}/{LOST_DEBOUNCE}]" if self.lost_count > 0 else ""
-            search_str = f" [SEARCHING→{'R' if self.search_direction > 0 else 'L'}]" if self.search_active else ""
-            brake_str = f" [BRAKING {self.brake_counter}]" if self.brake_counter > 0 else ""
-            print(f"[{self.elapsed():.1f}s] {sensors_str} | {error_str} | speed_L={self.left_speed:.0f} R={self.right_speed:.0f}{lost_str}{search_str}{brake_str}")
+    def _pivot(self, direction):
+        """Spin in place: direction +1 = turn right, -1 = turn left."""
+        if direction > 0:             # right: left wheel fwd, right wheel back
+            self.left_speed, self.right_speed = PIVOT_FWD, PIVOT_REV
+        else:                         # left
+            self.left_speed, self.right_speed = PIVOT_REV, PIVOT_FWD
 
+    def _corner_dir(self, L1, L2, R1, R2):
+        """At a 3-4 sensor corner, decide which way the line bends."""
+        if L1 and not R2:   return -1   # left-biased (1110 / 1100)
+        if R2 and not L1:   return +1   # right-biased (0111 / 0011)
+        return self.last_dir            # 1111 etc → continue last heading
+
+    def _reset_lost(self):
+        self.lost_count = 0
+        self.lost_phase = None
+
+    def _dbg(self, bits, state, count):
+        if self.debug and self._tick % 6 == 0:
+            print(f"[{self.elapsed():5.1f}s] {bits} n={count} | {state:<22} "
+                  f"L={self.left_speed:4.0f} R={self.right_speed:4.0f}", flush=True)
+
+    # ── main step ─────────────────────────────────────────────────────
+    def step(self):
+        """One control iteration. Returns True to continue, False to stop."""
+        self._tick += 1
+        L1, L2, R1, R2 = self.read_sensors()
+        count = int(L1) + int(L2) + int(R1) + int(R2)
+        bits = f"{int(L1)}{int(L2)}{int(R1)}{int(R2)}"
+
+        # ===== committed corner turn: finish the pivot before anything else =====
+        if self.latch_ticks > 0:
+            err = self.compute_error(L1, L2, R1, R2)
+            reacquired = (count <= 2 and err is not None and abs(err) <= REACQUIRE_ERR)
+            if reacquired:
+                self.latch_ticks = 0
+                self.prev_error = err
+                self._reset_lost()
+                # fall through to FOLLOW this same tick
+            else:
+                self.latch_ticks -= 1
+                self._pivot(self.latch_dir)
+                self._drive()
+                self._dbg(bits, f"TURN({'R' if self.latch_dir>0 else 'L'}) latch={self.latch_ticks}", count)
+                return True
+
+        # ===== corner: 3-4 sensors lit = the line bends — pivot and commit =====
+        if count >= CORNER_COUNT:
+            d = self._corner_dir(L1, L2, R1, R2)
+            self.latch_dir = d
+            self.latch_ticks = PIVOT_LATCH
+            self.last_dir = d
+            self._reset_lost()
+            self._pivot(d)
+            self._drive()
+            self._dbg(bits, f"CORNER->{'R' if d>0 else 'L'}", count)
+            return True
+
+        # ===== lost: 0 sensors = reverse first, then spin to re-find =====
+        if count == 0:
+            return self._handle_lost(bits)
+
+        # ===== follow: 1-2 sensors = PD steering =====
+        self._reset_lost()
+        err = self.compute_error(L1, L2, R1, R2)
+        if err != 0:
+            self.last_dir = 1 if err > 0 else -1
+
+        steering = (Kp * err) + (Kd * (err - self.prev_error))
+        self.prev_error = err
+        # error > 0 (tape on right) → steer RIGHT → left wheel faster, right slower
+        target_left  = SPEED + steering
+        target_right = SPEED - steering
+        self.left_speed  = SMOOTH * target_left  + (1 - SMOOTH) * self.left_speed
+        self.right_speed = SMOOTH * target_right + (1 - SMOOTH) * self.right_speed
+        self._drive()
+        self._dbg(bits, f"FOLLOW err={err:+.1f}", count)
+
+        time.sleep(LOOP_DELAY)
+        return True
+
+    def _handle_lost(self, bits):
+        """Lost the tape. Reverse to undo the overshoot, then spin-sweep to re-find.
+        If both spin directions come up empty, it's the true end of line → halt."""
+        # debounce brief flickers before committing to recovery
+        if self.lost_phase is None:
+            self.lost_count += 1
+            if self.lost_count < LOST_DEBOUNCE:
+                self._drive()  # keep coasting on last speeds briefly
+                time.sleep(LOOP_DELAY)
+                return True
+            # commit to recovery — reverse phase first
+            self.lost_phase = 'reverse'
+            self.reverse_left = REVERSE_TICKS
+            if self.debug:
+                print(f"[{self.elapsed():5.1f}s] 🔄 Lost line — reversing to undo overshoot", flush=True)
+
+        if self.lost_phase == 'reverse':
+            if self.reverse_left > 0:
+                self.reverse_left -= 1
+                self.left_speed = REVERSE_SPEED
+                self.right_speed = REVERSE_SPEED
+                self._drive()
+                self._dbg(bits, f"REVERSE {self.reverse_left}", 0)
+                time.sleep(LOOP_DELAY)
+                return True
+            # done backing up → start spinning toward where the line went
+            self.lost_phase = 'spin'
+            self.search_swept = False
+            self.search_dir = self.last_dir
+            self.search_start = time.time()
+            if self.debug:
+                side = 'RIGHT' if self.search_dir > 0 else 'LEFT'
+                print(f"[{self.elapsed():5.1f}s] 🔍 Spinning {side} (toward last heading)", flush=True)
+
+        # spin phase: sweep one way, then the other, then declare end-of-line
+        swept = time.time() - self.search_start
+        if not self.search_swept and swept >= SEARCH_HALF_TIME:
+            self.search_swept = True
+            self.search_dir = -self.search_dir
+            if self.debug:
+                side = 'RIGHT' if self.search_dir > 0 else 'LEFT'
+                print(f"[{self.elapsed():5.1f}s] 🔄 Not found — sweeping {side}", flush=True)
+        elif self.search_swept and swept >= SEARCH_MAX_TIME:
+            self.bot.stop()
+            if self.debug:
+                print(f"[{self.elapsed():5.1f}s] ✓ END OF LINE — no tape either way. Halting.", flush=True)
+            self.exit_code = 0
+            return False
+
+        self.left_speed = SEARCH_SPIN_SPEED * self.search_dir
+        self.right_speed = -SEARCH_SPIN_SPEED * self.search_dir
+        self._drive()
+        self._dbg(bits, f"SPIN {'R' if self.search_dir>0 else 'L'}", 0)
         time.sleep(LOOP_DELAY)
         return True
 
