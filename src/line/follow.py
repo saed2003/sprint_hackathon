@@ -27,10 +27,10 @@ from setup_and_api.api import RasBot, Color
 # ═══════════════════════════════════════════════════════════════════
 #  TUNING PARAMETERS
 # ═══════════════════════════════════════════════════════════════════
-SPEED          = 80       # base forward speed (0-255) — LOWER for better turn control
-Kp             = 60       # proportional steering gain — MUCH HIGHER for aggressive steering
-Kd             = 25       # derivative gain (reduces wobble)
-SMOOTH         = 0.5      # motor smoothing (0.1 smooth -> 0.5 snappy)
+SPEED          = 110      # base forward speed (0-255) — balanced for responsive steering
+Kp             = 40       # proportional steering gain — moderate for smooth corners
+Kd             = 18       # derivative gain (reduces wobble)
+SMOOTH         = 0.4      # motor smoothing (0.1 smooth -> 0.5 snappy)
 
 # Turn detection & braking
 BRAKE_AT_CORNER = False   # DISABLED — just use aggressive steering instead
