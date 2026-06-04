@@ -11,10 +11,11 @@ WHAT IT DOES
     is just normal off-centre wobble, so it produced an endless false
     FORK(L)/FORK(R) limit cycle. See git history / last_run.log.)
   • Drives at ONE fast SPEED with PD steering for smooth tracking.
-  • Sharp bends (only an OUTER sensor on the line) commit a short latched turn
-    with a momentum-kill brake pulse; the turn ends the instant the inner
-    sensors re-centre. All-black frames (e.g. a steep approach to a curve) read
-    as "centred" → just keep going straight.
+  • Sharp bends (only an OUTER sensor on the line) commit a latched turn with a
+    momentum-kill brake pulse. The turn is EXTENDED while the line is still off
+    to the turn side and ends only when the line reaches CENTER — so a 180°
+    U-turn / hairpin completes instead of bailing out early (capped UTURN_MAX).
+    All-black frames read as "centred" → just keep going straight.
   • If the tape is fully lost it spin-searches toward the last-seen side, and
     ends the run after END_LOST_SEC (default 3 s) of nothing.
   • Writes a full per-tick log to  tape_following/last_run.log  every run.
@@ -60,6 +61,10 @@ PIVOT_LATCH    = 22     # MAX ticks committed to a turn (22 x 8ms ~= 0.18 s). Sh
 BRAKE_PULSE    = 4      # reverse ticks on turn ENTRY to kill momentum (anti-miss)
 BRAKE_SPEED    = -100   # both-wheel speed during the brake pulse
 RECOVERY_LOCK  = 15     # ticks ignoring opposite outer sensor after a turn
+UTURN_MAX      = 90     # max ticks (~0.7 s) a single turn may keep pivoting. Lets a
+                        # 180° hairpin fully complete (the turn is EXTENDED while the
+                        # line is still off to the turn side); this caps it so a
+                        # genuine line-loss can't spin forever.
 
 # Lost line
 LOST_SPEED     = 110    # in-place spin speed while searching for the line
@@ -133,6 +138,7 @@ class _Follower:
         self.latch_ticks    = 0
         self.latch_dir      = 0
         self.brake_ticks    = 0
+        self._turn_age      = 0      # ticks spent in the current committed turn
         self._last_turn_dir = 0
         self._recov_lock    = 0
         self._tick = 0
@@ -145,6 +151,7 @@ class _Follower:
     def _arm_turn(self, direction):
         self.latch_dir      = direction
         self.latch_ticks    = PIVOT_LATCH
+        self._turn_age      = 0
         self._last_turn_dir = direction
         fwd = (self.actual_L + self.actual_R) / 2.0
         self.brake_ticks = BRAKE_PULSE if fwd > 80 else 0
@@ -165,23 +172,29 @@ class _Follower:
         self._tick += 1
         now = time.time()
 
-        # ── committed turn: finish it before anything else ────────
-        # End the turn the instant we're back on the line — a centred reading
-        # includes the all-black / 3-sensor frames ([1110],[0111],[1111]) that
-        # happen on a steep approach to a curve, so those STOP the turn rather
-        # than extend it (no more spinning in place on a black patch).
+        # ── committed turn: pivot until the line reaches CENTER ────
+        # The turn is DONE only when the line crosses to center-or-past it
+        # (raw on the opposite side of the turn, or 0). A single inner sensor
+        # on the SAME side as the turn is just the tape sweeping by mid-pivot,
+        # NOT a re-acquire — keep going. This is the U-turn fix: the old test
+        # (abs(raw) <= E_INNER) bailed out of a 180° hairpin at the wrong
+        # heading. While the line is still off to the turn side (or briefly
+        # lost in the hairpin gap) we EXTEND the turn, capped by UTURN_MAX.
         if self.latch_ticks > 0:
             raw = _read_pattern(L1, L2, R1, R2)
-            reacquired = (raw is not None and abs(raw) <= E_INNER)
-            if reacquired:
+            if raw is not None and raw * self.latch_dir <= 0:
                 self.latch_ticks = 0
                 self._recov_lock = RECOVERY_LOCK
             else:
-                self.latch_ticks -= 1
+                self._turn_age += 1
+                if self._turn_age < UTURN_MAX:
+                    self.latch_ticks = PIVOT_LATCH    # keep the turn committed
+                else:
+                    self.latch_ticks -= 1             # safety: give up eventually
                 self._drive_turn(bot)
                 self._lost_since = None
                 self._emit(bits, float(self.latch_dir) * E_OUTER,
-                           f"TURN({'L' if self.latch_dir < 0 else 'R'}) latch={self.latch_ticks}")
+                           f"TURN({'L' if self.latch_dir < 0 else 'R'}) age={self._turn_age}")
                 return
 
         # NOTE: single continuous line — NO junction/fork handling on purpose.
@@ -204,9 +217,13 @@ class _Follower:
                 self._apply(bot, self.actual_L, self.actual_R)
                 self._emit(bits, 0, "COAST")
                 return
-            # search toward the side the tape was last seen
-            side = self._last_turn_dir if self._last_turn_dir != 0 else (
-                -1 if self.last_error < 0 else 1)
+            # search toward the side the tape was last seen. Prefer the most
+            # recent error sign (where the line actually went) over the stale
+            # last-turn direction — otherwise a left hairpin after an earlier
+            # right turn would search the WRONG way and never re-find the line.
+            if self.last_error < 0:     side = -1
+            elif self.last_error > 0:   side = 1
+            else:                       side = self._last_turn_dir or 1
             if side < 0:
                 self._snap(bot, -LOST_SPEED, LOST_SPEED)
             else:
