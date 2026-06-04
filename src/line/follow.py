@@ -42,12 +42,18 @@ PIVOT_LATCH    = 45       # ticks committed to a corner turn (~0.36 s at 125 Hz)
 REACQUIRE_ERR  = 1.0      # |error| this small (with <=2 sensors) ends the turn
 
 # Lost-line recovery — REVERSE first (undo the overshoot), THEN spin to re-find.
-LOST_DEBOUNCE  = 5        # consecutive "all-off" reads before declaring lost
-REVERSE_TICKS  = 14       # back up this many ticks first (~0.11 s) to undo overshoot
+LOST_DEBOUNCE  = 4        # consecutive "all-off" reads before declaring lost
+REVERSE_TICKS  = 12       # back up this many ticks first (~0.10 s) to undo overshoot
 REVERSE_SPEED  = -95      # both wheels reverse while backing up
 SEARCH_SPIN_SPEED = 90    # speed to spin while searching for the line
-SEARCH_HALF_TIME = 0.7    # spin TOWARD the line's last heading for this long first
-SEARCH_MAX_TIME  = 2.2    # total spin budget; after this (both ways swept) = end of line
+SPIN_TOWARD_TIME = 0.45   # spin TOWARD the line's last heading for this long first
+SPIN_TOTAL_TIME  = 1.0    # total spin budget (kept under a U-turn); then = end of line
+
+# End-of-line (dead-end) detection. At a real end the robot drives off, the
+# reverse backs it onto the tape, it drives off again — losing the line over and
+# over in the same spot. That rapid repetition is the dead-end fingerprint.
+DEADEND_WINDOW = 1.6      # losses closer together than this count as "the same spot"
+DEADEND_LIMIT  = 3        # this many rapid losses in a row = end of line → halt + exit 0
 
 LOOP_DELAY     = 0.008    # 125 Hz loop (8ms)
 DEBUG          = True     # print live feedback
@@ -83,6 +89,8 @@ class LineFollower:
         self.search_dir = 1           # spin direction while searching
         self.search_swept = False     # have we flipped to sweep the other way yet
         self.search_start = 0.0       # when the spin began
+        self.recover_count = 0        # rapid recoveries in a row (dead-end fingerprint)
+        self.last_recover_time = -999.0  # when we last entered recovery
 
     def read_sensors(self):
         """Read all 4 sensors. Returns (L1, L2, R1, R2) as bools."""
@@ -188,8 +196,11 @@ class LineFollower:
         return True
 
     def _handle_lost(self, bits):
-        """Lost the tape. Reverse to undo the overshoot, then spin-sweep to re-find.
-        If both spin directions come up empty, it's the true end of line → halt."""
+        """Lost the tape. Reverse to undo the overshoot, then a short spin to re-find.
+        If the tape comes back, step() resumes following next tick (heading kept).
+        Two ways this declares END OF LINE and halts with exit 0:
+          1. We keep losing the tape in the same spot (dead-end fingerprint), or
+          2. The short spin sweeps both ways and finds nothing."""
         # debounce brief flickers before committing to recovery
         if self.lost_phase is None:
             self.lost_count += 1
@@ -197,11 +208,28 @@ class LineFollower:
                 self._drive()  # keep coasting on last speeds briefly
                 time.sleep(LOOP_DELAY)
                 return True
-            # commit to recovery — reverse phase first
+
+            # Committing to recovery — first, is this a dead-end? If we've had to
+            # recover several times in quick succession, the line keeps ending here.
+            now = time.time()
+            if now - self.last_recover_time < DEADEND_WINDOW:
+                self.recover_count += 1
+            else:
+                self.recover_count = 1
+            self.last_recover_time = now
+            if self.recover_count >= DEADEND_LIMIT:
+                self.bot.stop()
+                if self.debug:
+                    print(f"[{self.elapsed():5.1f}s] ✓ END OF LINE — tape keeps ending here "
+                          f"({self.recover_count}x in a row). Halting.", flush=True)
+                self.exit_code = 0
+                return False
+
+            # reverse phase first
             self.lost_phase = 'reverse'
             self.reverse_left = REVERSE_TICKS
             if self.debug:
-                print(f"[{self.elapsed():5.1f}s] 🔄 Lost line — reversing to undo overshoot", flush=True)
+                print(f"[{self.elapsed():5.1f}s] 🔄 Lost line — reversing (recover #{self.recover_count})", flush=True)
 
         if self.lost_phase == 'reverse':
             if self.reverse_left > 0:
@@ -221,15 +249,16 @@ class LineFollower:
                 side = 'RIGHT' if self.search_dir > 0 else 'LEFT'
                 print(f"[{self.elapsed():5.1f}s] 🔍 Spinning {side} (toward last heading)", flush=True)
 
-        # spin phase: sweep one way, then the other, then declare end-of-line
+        # spin phase: short sweep one way, then the other (kept under a U-turn).
+        # If nothing turns up, it's the end of line.
         swept = time.time() - self.search_start
-        if not self.search_swept and swept >= SEARCH_HALF_TIME:
+        if not self.search_swept and swept >= SPIN_TOWARD_TIME:
             self.search_swept = True
             self.search_dir = -self.search_dir
             if self.debug:
                 side = 'RIGHT' if self.search_dir > 0 else 'LEFT'
                 print(f"[{self.elapsed():5.1f}s] 🔄 Not found — sweeping {side}", flush=True)
-        elif self.search_swept and swept >= SEARCH_MAX_TIME:
+        elif self.search_swept and swept >= SPIN_TOTAL_TIME:
             self.bot.stop()
             if self.debug:
                 print(f"[{self.elapsed():5.1f}s] ✓ END OF LINE — no tape either way. Halting.", flush=True)
