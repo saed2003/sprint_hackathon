@@ -9,10 +9,15 @@ tracking problems:
                              a hard turn and latching onto the opposite sensor.
   2. STRAIGHT-LINE TRIM     — MOTOR_TRIM cancels physical drift; an error
        + DEADBAND (anti-zigzag) deadband + higher BASE_SPEED let it glide instead of hunting.
-  3. JUNCTIONS / DEAD-ENDS  — random branch at T-junctions; a dead-end counter
-                             does a 180° turn the first time and stops the
-                             second time (no infinite pacing).
-  4. BLACK-SQUARE STOP      — all four sensors black = terminal marker → stop.
+  3. JUNCTIONS / CROSSES    — random branch at T-junctions; an all-four-black
+                             cross is treated as a junction too (pick a side and
+                             drive through). The robot NEVER terminates on a
+                             marker — only Ctrl+C stops it.
+  4. NEVER-STOP RECOVERY    — when the tape is lost, spin-search toward the
+                             last-seen side and keep going until it re-acquires.
+                             No terminal stop, no dead-end shutdown.
+
+Every run is logged tick-by-tick to  tape_following/advanced_last_run.log.
 
 Sensor mapping (read_line_sensors → True == black tape):
     L1, L2, R1, R2 = bot.read_line_sensors()
@@ -56,20 +61,60 @@ MOTOR_TRIM = 1.00    # left-motor scale to cancel physical asymmetry.
 # ── Problem 1: hard-turn lockout ─────────────────────────────────────────────
 TURN_SPEED = 130     # in-place pivot speed used for hard 90° turns
 
-# ── Problem 3: junctions, dead-ends, recovery ────────────────────────────────
+# ── Problem 3: junctions + lost-line recovery ────────────────────────────────
 JUNCTION_CLEAR_TIME = 0.15   # s to force a turn so we fully clear an intersection
-SPIN_180_TIME       = 0.90   # s of in-place spin that equals ~180° (TIMED — the
-                             # robot has no encoder; calibrate for your floor/battery)
-DEAD_END_CONFIRM    = 8      # consecutive all-white loops before we BELIEVE it is a
-                             # real dead-end (debounce — stops a small tape gap from
-                             # falsely triggering the 180° / shutdown logic)
+DEAD_END_CONFIRM    = 8      # consecutive all-white loops before we switch from
+                             # "coast forward" to "spin and search" (debounce — a
+                             # small tape gap should not trigger a search spin)
 
 # PWM hard limits
 PWM_MIN, PWM_MAX = -255, 255
 
+# ── logging ──────────────────────────────────────────────────────────────────
+LOG_TO_FILE = True    # write a full per-tick log to advanced_last_run.log
+DEBUG_EVERY = 15      # also print every Nth tick to the console (file gets all)
+
+_HERE    = os.path.dirname(os.path.abspath(__file__))
+LOG_FILE = os.path.join(_HERE, "advanced_last_run.log")
+
 
 def clamp(val, lo=PWM_MIN, hi=PWM_MAX):
     return max(lo, min(val, hi))
+
+
+class RunLog:
+    """Writes every control tick to advanced_last_run.log for post-run review.
+
+    Line format matches best_follow.py so the same eye can read both:
+        [tick] [bits] err:±X L:nnn R:nnn  STATE
+    """
+    def __init__(self, enabled=LOG_TO_FILE):
+        self.f = None
+        self.tick = 0
+        if enabled:
+            try:
+                self.f = open(LOG_FILE, "w")
+                self.f.write(f"# advanced_follow run {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                self.f.write(f"# BASE={BASE_SPEED} Kp={Kp} Kd={Kd} DEADBAND={DEADBAND} "
+                             f"TRIM={MOTOR_TRIM} TURN={TURN_SPEED}\n")
+                self.f.write("# tick bits err L R state\n")
+            except Exception as e:
+                print(f"  log file open failed: {e}")
+
+    def emit(self, bits, err, left, right, state):
+        self.tick += 1
+        line = (f"[{self.tick:06d}] [{bits}] err:{err:+.1f} "
+                f"L:{int(left):4d} R:{int(right):4d}  {state}")
+        if self.f:
+            self.f.write(line + "\n")
+        if self.tick % DEBUG_EVERY == 0:
+            print(line, flush=True)
+
+    def close(self):
+        if self.f:
+            self.f.flush()
+            self.f.close()
+            print(f"  log saved -> {LOG_FILE}")
 
 
 # ============================================================================
@@ -95,19 +140,6 @@ def pivot_left(bot, speed=TURN_SPEED):
 def pivot_right(bot, speed=TURN_SPEED):
     """In-place spin RIGHT (CW): left wheels forward, right wheels back."""
     bot._apply_motors(speed, speed, -speed, -speed)
-
-
-def spin_180(bot, direction="right"):
-    """Timed ~180° in-place turn (open-loop — tune SPIN_180_TIME)."""
-    print(f"  [dead-end] spinning 180° ({direction}) to head back...")
-    t_end = time.time() + SPIN_180_TIME
-    while time.time() < t_end:
-        if direction == "right":
-            pivot_right(bot)
-        else:
-            pivot_left(bot)
-        time.sleep(LOOP_DELAY)
-    bot.stop()
 
 
 # ============================================================================
@@ -139,29 +171,24 @@ def sensor_error(L1, L2, R1, R2):
 
 def main():
     # ── persistent state across loop iterations ──────────────────────────────
-    last_error     = 0.0      # for the PD derivative term + recovery direction
-    turning_state  = "none"   # Problem 1 lockout: "none" | "left" | "right"
-    dead_end_count = 0        # Problem 3: 0 → none yet, 1 → spun back, 2 → home → stop
-    lost_streak    = 0        # consecutive all-white loops (dead-end debounce)
+    last_error    = 0.0      # for the PD derivative term + recovery direction
+    turning_state = "none"   # Problem 1 lockout: "none" | "left" | "right"
+    lost_streak   = 0        # consecutive all-white loops (recovery debounce)
+    log = RunLog(LOG_TO_FILE)
 
     with RasBot() as bot:
         print("=" * 60)
-        print("ADVANCED LINE FOLLOWER — PD + lockout + junctions + dead-ends")
+        print("ADVANCED LINE FOLLOWER — PD + lockout + junctions (never-stop)")
         print(f"BASE={BASE_SPEED} Kp={Kp} Kd={Kd} DEADBAND={DEADBAND} "
               f"TRIM={MOTOR_TRIM}")
+        print(f"logging every tick -> {LOG_FILE}")
         print("Ctrl+C to stop.")
         print("=" * 60)
 
         try:
             while True:
                 L1, L2, R1, R2 = bot.read_line_sensors()
-
-                # ── PROBLEM 4: BLACK-SQUARE TERMINAL CHECK (first thing) ──────
-                # All four sensors on black = the big terminal square. Done.
-                if L1 and L2 and R1 and R2:
-                    bot.stop()
-                    print("\n*** BLACK SQUARE REACHED — checkpoint complete. ***")
-                    return
+                bits = f"{int(L1)}{int(L2)}{int(R1)}{int(R2)}"
 
                 # ── PROBLEM 1: TURN LOCKOUT (highest steering priority) ───────
                 # While locked into a hard turn we IGNORE the opposite-side
@@ -175,28 +202,33 @@ def main():
                         # fall through to normal tracking this same loop
                     else:
                         if turning_state == "left":
-                            pivot_left(bot)
+                            pivot_left(bot);  l, r = -TURN_SPEED, TURN_SPEED
                         else:
-                            pivot_right(bot)
+                            pivot_right(bot); l, r = TURN_SPEED, -TURN_SPEED
+                        log.emit(bits, last_error, l, r, f"LOCK({turning_state})")
                         time.sleep(LOOP_DELAY)
                         continue   # stay locked — ignore everything else
 
-                # ── PROBLEM 3a: T-JUNCTION (3 sensors in a T pattern) ─────────
-                # L1+L2+R1 (left branch + ahead) or L2+R1+R2 (right branch + ahead).
-                # Pick a direction at random and FORCE it long enough to clear
-                # the intersection, so we don't immediately re-detect it.
+                # ── JUNCTIONS: T-junction OR full cross → pick a side and clear
+                # L1+L2+R1 (left branch + ahead), L2+R1+R2 (right branch + ahead),
+                # or all-four (a cross / former "stop square"). Pick a direction
+                # at random and FORCE it long enough to clear the intersection.
+                # NOTE: a cross is NO LONGER a terminal stop — we drive through it.
                 t_left  = (L1 and L2 and R1 and not R2)
                 t_right = (not L1 and L2 and R1 and R2)
-                if t_left or t_right:
+                cross   = (L1 and L2 and R1 and R2)
+                if t_left or t_right or cross:
                     choice = random.choice(["left", "right"])
-                    print(f"  [junction] T detected → forcing {choice} for "
+                    kind = "CROSS" if cross else "T-JUNC"
+                    print(f"  [{kind.lower()}] detected → forcing {choice} for "
                           f"{JUNCTION_CLEAR_TIME}s")
                     t_end = time.time() + JUNCTION_CLEAR_TIME
                     while time.time() < t_end:
                         if choice == "left":
-                            pivot_left(bot)
+                            pivot_left(bot);  l, r = -TURN_SPEED, TURN_SPEED
                         else:
-                            pivot_right(bot)
+                            pivot_right(bot); l, r = TURN_SPEED, -TURN_SPEED
+                        log.emit(bits, 0.0, l, r, f"{kind}->{choice}")
                         time.sleep(LOOP_DELAY)
                     last_error = 0.0
                     lost_streak = 0
@@ -205,34 +237,32 @@ def main():
                 # ── compute steering error ───────────────────────────────────
                 error = sensor_error(L1, L2, R1, R2)
 
-                # ── PROBLEM 3b: DEAD-END / LOOP PREVENTION (all white) ────────
+                # ── LOST LINE → NEVER-STOP RECOVERY (all white) ──────────────
                 if error is None:
                     lost_streak += 1
-                    # Debounce: a brief gap in the tape should NOT count as a
-                    # dead-end. Creep forward in the last-known direction while
-                    # we wait to see if the line comes back.
+                    # Brief gap: a short break in the tape should NOT trigger a
+                    # search. Creep forward in the last-known direction while we
+                    # wait to see if the line comes back.
                     if lost_streak < DEAD_END_CONFIRM:
-                        nudge = clamp(int(Kp * (last_error if last_error else 0)))
-                        drive(bot, BASE_SPEED * 0.6 + nudge,
-                                   BASE_SPEED * 0.6 - nudge)
+                        nudge = clamp(int(Kp * last_error))
+                        l = BASE_SPEED * 0.6 + nudge
+                        r = BASE_SPEED * 0.6 - nudge
+                        drive(bot, l, r)
+                        log.emit(bits, last_error, l, r, "COAST")
                         time.sleep(LOOP_DELAY)
                         continue
 
-                    # Confirmed dead-end.
-                    dead_end_count += 1
-                    lost_streak = 0
-                    bot.stop()
-                    if dead_end_count == 1:
-                        # First dead-end → turn around and head back to start.
-                        print("\n[dead-end #1] reversing course toward start.")
-                        spin_180(bot, direction="right")
-                        last_error = 0.0
-                        turning_state = "none"
-                        continue
+                    # Confirmed lost: spin in place toward the side the tape was
+                    # last seen and KEEP SEARCHING — the robot never stops, it
+                    # just hunts until it re-acquires the line.
+                    side = "left" if last_error < 0 else "right"
+                    if side == "left":
+                        pivot_left(bot);  l, r = -TURN_SPEED, TURN_SPEED
                     else:
-                        # Second dead-end → we're back at the origin. Stop for good.
-                        print("\n*** [dead-end #2] back at origin — STOP. ***")
-                        return
+                        pivot_right(bot); l, r = TURN_SPEED, -TURN_SPEED
+                    log.emit(bits, last_error, l, r, f"SEARCH({side})")
+                    time.sleep(LOOP_DELAY)
+                    continue
 
                 # line is visible again → reset the lost counter
                 lost_streak = 0
@@ -244,12 +274,14 @@ def main():
                     turning_state = "left"
                     print("  [lockout] hard LEFT turn — opposite sensors ignored")
                     pivot_left(bot)
+                    log.emit(bits, error, -TURN_SPEED, TURN_SPEED, "LOCK-ENTER(left)")
                     time.sleep(LOOP_DELAY)
                     continue
                 if R2 and not R1 and not L2 and not L1:
                     turning_state = "right"
                     print("  [lockout] hard RIGHT turn — opposite sensors ignored")
                     pivot_right(bot)
+                    log.emit(bits, error, TURN_SPEED, -TURN_SPEED, "LOCK-ENTER(right)")
                     time.sleep(LOOP_DELAY)
                     continue
 
@@ -268,12 +300,15 @@ def main():
                 right_speed = clamp(BASE_SPEED - correction)
                 drive(bot, left_speed, right_speed)
 
+                state = "STRAIGHT" if correction == 0 else "PD"
+                log.emit(bits, error, left_speed, right_speed, state)
                 time.sleep(LOOP_DELAY)
 
         except KeyboardInterrupt:
             print("\nStopping (Ctrl+C)...")
         finally:
             bot.stop()
+            log.close()
             print("Motors off.")
 
 
