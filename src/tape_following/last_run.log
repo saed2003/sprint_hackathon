@@ -1,0 +1,449 @@
+# best_follow run 2026-06-04 09:34:06
+# SPEED=185 Kp=24 Kd=14 PIVOT_LATCH=70 BRAKE_PULSE=4 JUNCTION_DIR=1
+# tick bits err L R state
+[000001] [0110] err:+0.0 L:  64 R:  64  STRAIGHT
+[000002] [0110] err:+0.0 L: 106 R: 106  STRAIGHT
+[000003] [0110] err:+0.0 L: 134 R: 134  STRAIGHT
+[000004] [0110] err:+0.0 L: 151 R: 151  STRAIGHT
+[000005] [0110] err:+0.0 L: 163 R: 163  STRAIGHT
+[000006] [0110] err:+0.0 L: 171 R: 171  STRAIGHT
+[000007] [0110] err:+0.0 L: 175 R: 175  STRAIGHT
+[000008] [0110] err:+0.0 L: 179 R: 179  STRAIGHT
+[000009] [1110] err:-4.0 L:-100 R:-100  FORK(L)->go
+[000010] [1110] err:-4.0 L:-100 R:-100  TURN(L) latch=69
+[000011] [1110] err:-4.0 L:-100 R:-100  TURN(L) latch=68
+[000012] [1110] err:-4.0 L:-100 R:-100  TURN(L) latch=67
+[000013] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=66
+[000014] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=65
+[000015] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=64
+[000016] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=63
+[000017] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=62
+[000018] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=61
+[000019] [0110] err:+0.0 L:  29 R: 129  STRAIGHT
+[000020] [0110] err:+0.0 L:  83 R: 149  STRAIGHT
+[000021] [0110] err:+0.0 L: 119 R: 161  STRAIGHT
+[000022] [0110] err:+0.0 L: 142 R: 169  STRAIGHT
+[000023] [0110] err:+0.0 L: 157 R: 175  STRAIGHT
+[000024] [0110] err:+0.0 L: 166 R: 178  STRAIGHT
+[000025] [0110] err:+0.0 L: 173 R: 180  STRAIGHT
+[000026] [0111] err:+4.0 L:-100 R:-100  FORK(R)->go
+[000027] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=69
+[000028] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=68
+[000029] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=67
+[000030] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=66
+[000031] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=65
+[000032] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=64
+[000033] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=63
+[000034] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=62
+[000035] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=61
+[000036] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=60
+[000037] [0110] err:+0.0 L: 129 R:  29  STRAIGHT
+[000038] [0110] err:+0.0 L: 149 R:  83  STRAIGHT
+[000039] [0110] err:+0.0 L: 161 R: 119  STRAIGHT
+[000040] [0110] err:+0.0 L: 169 R: 142  STRAIGHT
+[000041] [0110] err:+0.0 L: 175 R: 157  STRAIGHT
+[000042] [0110] err:+0.0 L: 178 R: 166  STRAIGHT
+[000043] [1110] err:-4.0 L:-100 R:-100  FORK(L)->go
+[000044] [1110] err:-4.0 L:-100 R:-100  TURN(L) latch=69
+[000045] [1100] err:-4.0 L:-100 R:-100  TURN(L) latch=68
+[000046] [1100] err:-4.0 L:-100 R:-100  TURN(L) latch=67
+[000047] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=66
+[000048] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=65
+[000049] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=64
+[000050] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=63
+[000051] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=62
+[000052] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=61
+[000053] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=60
+[000054] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=59
+[000055] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=58
+[000056] [0110] err:+0.0 L:  29 R: 129  STRAIGHT
+[000057] [0110] err:+0.0 L:  83 R: 149  STRAIGHT
+[000058] [0110] err:+0.0 L: 119 R: 161  STRAIGHT
+[000059] [0110] err:+0.0 L: 142 R: 169  STRAIGHT
+[000060] [0110] err:+0.0 L: 157 R: 175  STRAIGHT
+[000061] [0111] err:+4.0 L:-100 R:-100  FORK(R)->go
+[000062] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=69
+[000063] [0011] err:+4.0 L:-100 R:-100  TURN(R) latch=68
+[000064] [0011] err:+4.0 L:-100 R:-100  TURN(R) latch=67
+[000065] [0001] err:+4.0 L: 130 R: -85  TURN(R) latch=66
+[000066] [0001] err:+4.0 L: 130 R: -85  TURN(R) latch=65
+[000067] [0001] err:+4.0 L: 130 R: -85  TURN(R) latch=64
+[000068] [0001] err:+4.0 L: 130 R: -85  TURN(R) latch=63
+[000069] [0001] err:+4.0 L: 130 R: -85  TURN(R) latch=62
+[000070] [0001] err:+4.0 L: 130 R: -85  TURN(R) latch=61
+[000071] [0001] err:+4.0 L: 130 R: -85  TURN(R) latch=60
+[000072] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=59
+[000073] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=58
+[000074] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=57
+[000075] [0110] err:+0.0 L: 129 R:  29  STRAIGHT
+[000076] [0110] err:+0.0 L: 149 R:  83  STRAIGHT
+[000077] [0110] err:+0.0 L: 161 R: 119  STRAIGHT
+[000078] [0110] err:+0.0 L: 169 R: 142  STRAIGHT
+[000079] [1110] err:-4.0 L:-100 R:-100  FORK(L)->go
+[000080] [1110] err:-4.0 L:-100 R:-100  TURN(L) latch=69
+[000081] [1110] err:-4.0 L:-100 R:-100  TURN(L) latch=68
+[000082] [1110] err:-4.0 L:-100 R:-100  TURN(L) latch=67
+[000083] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=66
+[000084] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=65
+[000085] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=64
+[000086] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=63
+[000087] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=62
+[000088] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=61
+[000089] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=60
+[000090] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=59
+[000091] [0110] err:+0.0 L:  29 R: 129  STRAIGHT
+[000092] [0110] err:+0.0 L:  83 R: 149  STRAIGHT
+[000093] [0110] err:+0.0 L: 119 R: 161  STRAIGHT
+[000094] [0110] err:+0.0 L: 142 R: 169  STRAIGHT
+[000095] [0110] err:+0.0 L: 157 R: 175  STRAIGHT
+[000096] [0110] err:+0.0 L: 166 R: 178  STRAIGHT
+[000097] [0111] err:+4.0 L:-100 R:-100  FORK(R)->go
+[000098] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=69
+[000099] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=68
+[000100] [0011] err:+4.0 L:-100 R:-100  TURN(R) latch=67
+[000101] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=66
+[000102] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=65
+[000103] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=64
+[000104] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=63
+[000105] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=62
+[000106] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=61
+[000107] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=60
+[000108] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=59
+[000109] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=58
+[000110] [0110] err:+0.0 L: 129 R:  29  STRAIGHT
+[000111] [0110] err:+0.0 L: 149 R:  83  STRAIGHT
+[000112] [0110] err:+0.0 L: 161 R: 119  STRAIGHT
+[000113] [0110] err:+0.0 L: 169 R: 142  STRAIGHT
+[000114] [1110] err:-4.0 L:-100 R:-100  FORK(L)->go
+[000115] [1110] err:-4.0 L:-100 R:-100  TURN(L) latch=69
+[000116] [1110] err:-4.0 L:-100 R:-100  TURN(L) latch=68
+[000117] [1110] err:-4.0 L:-100 R:-100  TURN(L) latch=67
+[000118] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=66
+[000119] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=65
+[000120] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=64
+[000121] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=63
+[000122] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=62
+[000123] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=61
+[000124] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=60
+[000125] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=59
+[000126] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=58
+[000127] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=57
+[000128] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=56
+[000129] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=55
+[000130] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=54
+[000131] [0110] err:+0.0 L:  29 R: 129  STRAIGHT
+[000132] [0110] err:+0.0 L:  83 R: 149  STRAIGHT
+[000133] [0110] err:+0.0 L: 119 R: 161  STRAIGHT
+[000134] [0110] err:+0.0 L: 142 R: 169  STRAIGHT
+[000135] [0110] err:+0.0 L: 157 R: 175  STRAIGHT
+[000136] [0110] err:+0.0 L: 166 R: 178  STRAIGHT
+[000137] [0110] err:+0.0 L: 173 R: 180  STRAIGHT
+[000138] [0111] err:+4.0 L:-100 R:-100  FORK(R)->go
+[000139] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=69
+[000140] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=68
+[000141] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=67
+[000142] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=66
+[000143] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=65
+[000144] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=64
+[000145] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=63
+[000146] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=62
+[000147] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=61
+[000148] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=60
+[000149] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=59
+[000150] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=58
+[000151] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=57
+[000152] [0110] err:+0.0 L: 129 R:  29  STRAIGHT
+[000153] [0110] err:+0.0 L: 149 R:  83  STRAIGHT
+[000154] [0110] err:+0.0 L: 161 R: 119  STRAIGHT
+[000155] [0110] err:+0.0 L: 169 R: 142  STRAIGHT
+[000156] [0110] err:+0.0 L: 175 R: 157  STRAIGHT
+[000157] [0110] err:+0.0 L: 178 R: 166  STRAIGHT
+[000158] [1110] err:-4.0 L:-100 R:-100  FORK(L)->go
+[000159] [1110] err:-4.0 L:-100 R:-100  TURN(L) latch=69
+[000160] [1110] err:-4.0 L:-100 R:-100  TURN(L) latch=68
+[000161] [1110] err:-4.0 L:-100 R:-100  TURN(L) latch=67
+[000162] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=66
+[000163] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=65
+[000164] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=64
+[000165] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=63
+[000166] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=62
+[000167] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=61
+[000168] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=60
+[000169] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=59
+[000170] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=58
+[000171] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=57
+[000172] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=56
+[000173] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=55
+[000174] [0110] err:+0.0 L:  29 R: 129  STRAIGHT
+[000175] [0110] err:+0.0 L:  83 R: 149  STRAIGHT
+[000176] [0110] err:+0.0 L: 119 R: 161  STRAIGHT
+[000177] [0110] err:+0.0 L: 142 R: 169  STRAIGHT
+[000178] [0110] err:+0.0 L: 157 R: 175  STRAIGHT
+[000179] [0110] err:+0.0 L: 166 R: 178  STRAIGHT
+[000180] [0111] err:+4.0 L:-100 R:-100  FORK(R)->go
+[000181] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=69
+[000182] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=68
+[000183] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=67
+[000184] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=66
+[000185] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=65
+[000186] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=64
+[000187] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=63
+[000188] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=62
+[000189] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=61
+[000190] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=60
+[000191] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=59
+[000192] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=58
+[000193] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=57
+[000194] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=56
+[000195] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=55
+[000196] [0110] err:+0.0 L: 129 R:  29  STRAIGHT
+[000197] [0110] err:+0.0 L: 149 R:  83  STRAIGHT
+[000198] [0110] err:+0.0 L: 161 R: 119  STRAIGHT
+[000199] [0110] err:+0.0 L: 169 R: 142  STRAIGHT
+[000200] [0110] err:+0.0 L: 175 R: 157  STRAIGHT
+[000201] [0110] err:+0.0 L: 178 R: 166  STRAIGHT
+[000202] [0110] err:+0.0 L: 180 R: 173  STRAIGHT
+[000203] [1110] err:-4.0 L:-100 R:-100  FORK(L)->go
+[000204] [1110] err:-4.0 L:-100 R:-100  TURN(L) latch=69
+[000205] [1110] err:-4.0 L:-100 R:-100  TURN(L) latch=68
+[000206] [1110] err:-4.0 L:-100 R:-100  TURN(L) latch=67
+[000207] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=66
+[000208] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=65
+[000209] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=64
+[000210] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=63
+[000211] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=62
+[000212] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=61
+[000213] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=60
+[000214] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=59
+[000215] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=58
+[000216] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=57
+[000217] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=56
+[000218] [0110] err:+0.0 L:  29 R: 129  STRAIGHT
+[000219] [0110] err:+0.0 L:  83 R: 149  STRAIGHT
+[000220] [0110] err:+0.0 L: 119 R: 161  STRAIGHT
+[000221] [0110] err:+0.0 L: 142 R: 169  STRAIGHT
+[000222] [0110] err:+0.0 L: 157 R: 175  STRAIGHT
+[000223] [0110] err:+0.0 L: 166 R: 178  STRAIGHT
+[000224] [0111] err:+4.0 L:-100 R:-100  FORK(R)->go
+[000225] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=69
+[000226] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=68
+[000227] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=67
+[000228] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=66
+[000229] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=65
+[000230] [1111] err:+4.0 L: 130 R: -85  TURN(R) latch=64
+[000231] [1111] err:+4.0 L: 130 R: -85  TURN(R) latch=63
+[000232] [1111] err:+4.0 L: 130 R: -85  TURN(R) latch=62
+[000233] [1111] err:+4.0 L: 130 R: -85  TURN(R) latch=61
+[000234] [1111] err:+4.0 L: 130 R: -85  TURN(R) latch=60
+[000235] [1111] err:+4.0 L: 130 R: -85  TURN(R) latch=59
+[000236] [1111] err:+4.0 L: 130 R: -85  TURN(R) latch=58
+[000237] [1111] err:+4.0 L: 130 R: -85  TURN(R) latch=57
+[000238] [1111] err:+4.0 L: 130 R: -85  TURN(R) latch=56
+[000239] [1111] err:+4.0 L: 130 R: -85  TURN(R) latch=55
+[000240] [1110] err:+4.0 L: 130 R: -85  TURN(R) latch=54
+[000241] [1110] err:+4.0 L: 130 R: -85  TURN(R) latch=53
+[000242] [1110] err:+4.0 L: 130 R: -85  TURN(R) latch=52
+[000243] [1110] err:+4.0 L: 130 R: -85  TURN(R) latch=51
+[000244] [1110] err:+4.0 L: 130 R: -85  TURN(R) latch=50
+[000245] [1110] err:+4.0 L: 130 R: -85  TURN(R) latch=49
+[000246] [1110] err:+4.0 L: 130 R: -85  TURN(R) latch=48
+[000247] [1000] err:+4.0 L: 130 R: -85  TURN(R) latch=47
+[000248] [1000] err:+4.0 L: 130 R: -85  TURN(R) latch=46
+[000249] [1000] err:+4.0 L: 130 R: -85  TURN(R) latch=45
+[000250] [1000] err:+4.0 L: 130 R: -85  TURN(R) latch=44
+[000251] [1000] err:+4.0 L: 130 R: -85  TURN(R) latch=43
+[000252] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=42
+[000253] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=41
+[000254] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=40
+[000255] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=39
+[000256] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=38
+[000257] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=37
+[000258] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=36
+[000259] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=35
+[000260] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=34
+[000261] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=33
+[000262] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=32
+[000263] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=31
+[000264] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=30
+[000265] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=29
+[000266] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=28
+[000267] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=27
+[000268] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=26
+[000269] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=25
+[000270] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=24
+[000271] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=23
+[000272] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=22
+[000273] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=21
+[000274] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=20
+[000275] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=19
+[000276] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=18
+[000277] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=17
+[000278] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=16
+[000279] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=15
+[000280] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=14
+[000281] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=13
+[000282] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=12
+[000283] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=11
+[000284] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=10
+[000285] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=9
+[000286] [0000] err:+4.0 L: 130 R: -85  TURN(R) latch=8
+[000287] [0001] err:+4.0 L: 130 R: -85  TURN(R) latch=7
+[000288] [0001] err:+4.0 L: 130 R: -85  TURN(R) latch=6
+[000289] [0001] err:+4.0 L: 130 R: -85  TURN(R) latch=5
+[000290] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=4
+[000291] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=3
+[000292] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=2
+[000293] [0110] err:+0.0 L: 129 R:  29  STRAIGHT
+[000294] [0110] err:+0.0 L: 149 R:  83  STRAIGHT
+[000295] [1110] err:-4.0 L:-100 R:-100  FORK(L)->go
+[000296] [1110] err:-4.0 L:-100 R:-100  TURN(L) latch=69
+[000297] [1100] err:-4.0 L:-100 R:-100  TURN(L) latch=68
+[000298] [1000] err:-4.0 L:-100 R:-100  TURN(L) latch=67
+[000299] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=66
+[000300] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=65
+[000301] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=64
+[000302] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=63
+[000303] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=62
+[000304] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=61
+[000305] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=60
+[000306] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=59
+[000307] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=58
+[000308] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=57
+[000309] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=56
+[000310] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=55
+[000311] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=54
+[000312] [0110] err:+0.0 L:  29 R: 129  STRAIGHT
+[000313] [0110] err:+0.0 L:  83 R: 149  STRAIGHT
+[000314] [0110] err:+0.0 L: 119 R: 161  STRAIGHT
+[000315] [0111] err:+4.0 L:-100 R:-100  FORK(R)->go
+[000316] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=69
+[000317] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=68
+[000318] [0011] err:+4.0 L:-100 R:-100  TURN(R) latch=67
+[000319] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=66
+[000320] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=65
+[000321] [0001] err:+4.0 L: 130 R: -85  TURN(R) latch=64
+[000322] [0001] err:+4.0 L: 130 R: -85  TURN(R) latch=63
+[000323] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=62
+[000324] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=61
+[000325] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=60
+[000326] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=59
+[000327] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=58
+[000328] [0110] err:+0.0 L: 129 R:  29  STRAIGHT
+[000329] [0110] err:+0.0 L: 149 R:  83  STRAIGHT
+[000330] [0110] err:+0.0 L: 161 R: 119  STRAIGHT
+[000331] [1110] err:-4.0 L:-100 R:-100  FORK(L)->go
+[000332] [1110] err:-4.0 L:-100 R:-100  TURN(L) latch=69
+[000333] [1110] err:-4.0 L:-100 R:-100  TURN(L) latch=68
+[000334] [1100] err:-4.0 L:-100 R:-100  TURN(L) latch=67
+[000335] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=66
+[000336] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=65
+[000337] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=64
+[000338] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=63
+[000339] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=62
+[000340] [1000] err:-4.0 L: -85 R: 130  TURN(L) latch=61
+[000341] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=60
+[000342] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=59
+[000343] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=58
+[000344] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=57
+[000345] [0110] err:+0.0 L:  29 R: 129  STRAIGHT
+[000346] [0110] err:+0.0 L:  83 R: 149  STRAIGHT
+[000347] [0110] err:+0.0 L: 119 R: 161  STRAIGHT
+[000348] [0110] err:+0.0 L: 142 R: 169  STRAIGHT
+[000349] [0110] err:+0.0 L: 157 R: 175  STRAIGHT
+[000350] [0111] err:+4.0 L:-100 R:-100  FORK(R)->go
+[000351] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=69
+[000352] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=68
+[000353] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=67
+[000354] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=66
+[000355] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=65
+[000356] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=64
+[000357] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=63
+[000358] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=62
+[000359] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=61
+[000360] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=60
+[000361] [0110] err:+0.0 L: 129 R:  29  STRAIGHT
+[000362] [0110] err:+0.0 L: 149 R:  83  STRAIGHT
+[000363] [0110] err:+0.0 L: 161 R: 119  STRAIGHT
+[000364] [0110] err:+0.0 L: 169 R: 142  STRAIGHT
+[000365] [0110] err:+0.0 L: 175 R: 157  STRAIGHT
+[000366] [0110] err:+0.0 L: 178 R: 166  STRAIGHT
+[000367] [0110] err:+0.0 L: 180 R: 173  STRAIGHT
+[000368] [0110] err:+0.0 L: 182 R: 177  STRAIGHT
+[000369] [1110] err:-4.0 L:-100 R:-100  FORK(L)->go
+[000370] [1110] err:-4.0 L:-100 R:-100  TURN(L) latch=69
+[000371] [1110] err:-4.0 L:-100 R:-100  TURN(L) latch=68
+[000372] [1110] err:-4.0 L:-100 R:-100  TURN(L) latch=67
+[000373] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=66
+[000374] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=65
+[000375] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=64
+[000376] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=63
+[000377] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=62
+[000378] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=61
+[000379] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=60
+[000380] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=59
+[000381] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=58
+[000382] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=57
+[000383] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=56
+[000384] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=55
+[000385] [0110] err:+0.0 L:  29 R: 129  STRAIGHT
+[000386] [0110] err:+0.0 L:  83 R: 149  STRAIGHT
+[000387] [0110] err:+0.0 L: 119 R: 161  STRAIGHT
+[000388] [0110] err:+0.0 L: 142 R: 169  STRAIGHT
+[000389] [0110] err:+0.0 L: 157 R: 175  STRAIGHT
+[000390] [0110] err:+0.0 L: 166 R: 178  STRAIGHT
+[000391] [0110] err:+0.0 L: 173 R: 180  STRAIGHT
+[000392] [0111] err:+4.0 L:-100 R:-100  FORK(R)->go
+[000393] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=69
+[000394] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=68
+[000395] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=67
+[000396] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=66
+[000397] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=65
+[000398] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=64
+[000399] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=63
+[000400] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=62
+[000401] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=61
+[000402] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=60
+[000403] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=59
+[000404] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=58
+[000405] [0111] err:+4.0 L: 130 R: -85  TURN(R) latch=57
+[000406] [0110] err:+0.0 L: 129 R:  29  STRAIGHT
+[000407] [0110] err:+0.0 L: 149 R:  83  STRAIGHT
+[000408] [0110] err:+0.0 L: 161 R: 119  STRAIGHT
+[000409] [0110] err:+0.0 L: 169 R: 142  STRAIGHT
+[000410] [0110] err:+0.0 L: 175 R: 157  STRAIGHT
+[000411] [0110] err:+0.0 L: 178 R: 166  STRAIGHT
+[000412] [0110] err:+0.0 L: 180 R: 173  STRAIGHT
+[000413] [1110] err:-4.0 L:-100 R:-100  FORK(L)->go
+[000414] [1110] err:-4.0 L:-100 R:-100  TURN(L) latch=69
+[000415] [1110] err:-4.0 L:-100 R:-100  TURN(L) latch=68
+[000416] [1110] err:-4.0 L:-100 R:-100  TURN(L) latch=67
+[000417] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=66
+[000418] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=65
+[000419] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=64
+[000420] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=63
+[000421] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=62
+[000422] [1100] err:-4.0 L: -85 R: 130  TURN(L) latch=61
+[000423] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=60
+[000424] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=59
+[000425] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=58
+[000426] [1110] err:-4.0 L: -85 R: 130  TURN(L) latch=57
+[000427] [0110] err:+0.0 L:  29 R: 129  STRAIGHT
+[000428] [0110] err:+0.0 L:  83 R: 149  STRAIGHT
+[000429] [0110] err:+0.0 L: 119 R: 161  STRAIGHT
+[000430] [0110] err:+0.0 L: 142 R: 169  STRAIGHT
+[000431] [0110] err:+0.0 L: 157 R: 175  STRAIGHT
+[000432] [0110] err:+0.0 L: 166 R: 178  STRAIGHT
+[000433] [0110] err:+0.0 L: 173 R: 180  STRAIGHT
+[000434] [0111] err:+4.0 L:-100 R:-100  FORK(R)->go
+[000435] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=69
+[000436] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=68
+[000437] [0111] err:+4.0 L:-100 R:-100  TURN(R) latch=67
+[000438] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=66
+[000439] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=65
+[000440] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=64
+[000441] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=63
+[000442] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=62
+[000443] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=61
+[000444] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=60
+[000445] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=59
+[000446] [0011] err:+4.0 L: 130 R: -85  TURN(R) latch=58
