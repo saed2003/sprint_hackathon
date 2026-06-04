@@ -120,13 +120,16 @@ def sensor_error(L1, L2, R1, R2):
     Returns None when the line is completely lost (all white) so the caller
     can run dead-end logic instead of steering on stale data.
     """
+    # NOTE: order matters — most-specific patterns first. The graduated
+    # ±1.5 "both sensors on one side" cases must be tested before the
+    # ±1.0 "inner only" cases, otherwise the inner-only test swallows them.
     if L2 and R1:            return 0.0    # both inner = perfectly centered
-    if L2 and not R1:        return -1.0   # tape slightly left
-    if L1 and L2:            return -1.5   # tape further left (both left sensors)
     if L1 and not L2:        return -2.0   # tape FAR left (outer only) → hard turn
-    if R1 and not L2:        return 1.0    # tape slightly right
-    if R1 and R2:            return 1.5    # tape further right (both right sensors)
+    if L1 and L2:            return -1.5   # tape further left (both left sensors)
+    if L2 and not R1:        return -1.0   # tape slightly left (inner only)
     if R2 and not R1:        return 2.0    # tape FAR right (outer only) → hard turn
+    if R1 and R2:            return 1.5    # tape further right (both right sensors)
+    if R1 and not L2:        return 1.0    # tape slightly right (inner only)
     return None                            # nothing seen → line lost
 
 
