@@ -108,16 +108,27 @@ They are new, isolated files — they change nothing else and never touch the ru
 | Script | What it adds | Output |
 |---|---|---|
 | `run_pi.py` | the friend's **feature merge** (fast, coarse) | `object_pi.ply` |
+| **`process_pi.py`** ⭐ | **post-process pipeline** (use this after `run_pi`). Reuses the proven feature poses, then **cuts the floor "stalk"** under the car (height band), **fuses duplicate/overlapping views by voxel-mean** (averages noise instead of smearing), and **denoises** (statistical-outlier + largest-cluster). `--full` also screw-bridges the texture-less shots for more coverage. | `object_clean.ply` |
 | `run_pi2.py` | pure-numpy **point-to-plane ICP** refine + **symmetry-fold veto** + **known-model stand-crop** (drops the rotationally-symmetric stand using the car's known height, so ICP/features lock on the distinctive car). `--relax-iters` pose-graph relax is **off by default** (it spread the cloud). | `object_pi_hq.ply` (car-only) |
 | `run_pi_template.py` | **model-to-frame**: snaps each view onto a saved canonical **template** with **leeway** (trimmed ICP + orientation search + drops non-conforming views — because captures vary) | `object_pi_tpl.ply` |
 
 ```bash
 # on the Pi (RasBot + pyrealsense2 + cv2 + numpy; scipy optional; NO Open3D):
-python3 run_pi.py                       # --object teemo | --shots 36 | --radius 0.35 | --sift
+python3 run_pi.py                       # capture + feature merge -> object_pi.ply
+python3 process_pi.py                   # ⭐ clean the newest scan -> object_clean.ply
+python3 process_pi.py --full            # ...also screw-bridge feature-less shots (more coverage, softer)
+python3 process_pi.py captures/orbit_<ts> --sift --win 3 --voxel 0.003   # tune
 python3 run_pi2.py                      # --reg-voxel | --icp-iters | --win | --relax-iters | --keep-stand
 python3 run_pi_template.py              # --leeway 0.03 | --template db5_template.npz | --fit-min 0.45
 python3 run_pi2.py --build captures/orbit_<ts>     # any of them: merge an existing scan, no robot
 ```
+
+> **Why `process_pi.py` beats the raw `run_pi` cloud (on `orbit_20260604_084052`):** the bare
+> feature merge places ~16 of 41 shots (the silver car's smooth sides give no features) and keeps a
+> ~15 cm-tall segment (car **+** floor stalk), so it reads ~31 cm and fuzzy. `process_pi` trims the
+> stalk and fuses the duplicate views → a denoised **18×12×16 cm** car. On a well-lit, textured scan
+> it instead connects nearly every shot (e.g. 43/46) → a full 360°. It is the *post-process*; for the
+> sharpest result still **build on the laptop** with `build_object.py` + Open3D (see the note below).
 
 The template is made **once on the laptop** (needs Open3D) and committed so the Pi just loads it:
 ```bash
