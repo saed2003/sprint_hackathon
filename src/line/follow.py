@@ -27,16 +27,16 @@ from setup_and_api.api import RasBot, Color
 # ═══════════════════════════════════════════════════════════════════
 #  TUNING PARAMETERS
 # ═══════════════════════════════════════════════════════════════════
-SPEED          = 100      # base forward speed (0-255) — reduced for sharp turns
-Kp             = 45       # proportional steering gain — INCREASED for sharp turns
-Kd             = 20       # derivative gain (reduces wobble)
-SMOOTH         = 0.4      # motor smoothing (0.1 smooth -> 0.5 snappy)
+SPEED          = 80       # base forward speed (0-255) — LOWER for better turn control
+Kp             = 60       # proportional steering gain — MUCH HIGHER for aggressive steering
+Kd             = 25       # derivative gain (reduces wobble)
+SMOOTH         = 0.5      # motor smoothing (0.1 smooth -> 0.5 snappy)
 
 # Turn detection & braking
-BRAKE_AT_CORNER = True    # brake briefly when sharp turn detected
-CORNER_THRESHOLD = 2.0    # error magnitude that triggers corner detection
-BRAKE_SPEED    = 40       # reverse speed when braking
-BRAKE_TICKS    = 3        # how many loops to brake (3 * 8ms = 24ms)
+BRAKE_AT_CORNER = False   # DISABLED — just use aggressive steering instead
+CORNER_THRESHOLD = 3.0    # error magnitude that triggers corner detection
+BRAKE_SPEED    = 20       # gentle reverse speed when braking
+BRAKE_TICKS    = 1        # minimal braking (just 1 tick = 8ms)
 
 # Line loss detection
 LOST_DEBOUNCE  = 8        # consecutive "all-off" reads to declare lost (8 * 8ms = 64ms)
