@@ -280,25 +280,21 @@ def _bearing_deg(cam):
     return math.degrees(math.atan2(u - cam.intr.ppx, cam.intr.fx))
 
 
-def run_orbit(bot, cam, shots=ORBIT_SHOTS, radius=ORBIT_RADIUS, degrees=360.0,
-              out_root=None, log=print):
-    """Stop-and-shoot orbit. Goes around `degrees` of the object (default a full 360°).
-    `shots` sets the nominal step / strafe chord: MORE shots => SMALLER step => consecutive
-    views overlap more => more of them feature-register => a fuller car (the smooth silver
-    sides need that overlap). The stop is bounded to the planned step count so it can't run
-    away to 500°+ if the vision-measured advance under-counts. Returns the session."""
+def run_orbit(bot, cam, shots=ORBIT_SHOTS, radius=ORBIT_RADIUS, out_root=None, log=print):
+    """Stop-and-shoot orbit. Drives until a FULL 360° **measured by the camera** (object
+    bearing swing per step), NOT a fixed shot count — so mecanum strafe slip can't stop it
+    half-way. `shots` only sets the strafe chord (nominal step size). Returns the session."""
     out_root = out_root or default_out_root()
     session = os.path.join(out_root, "orbit_" + time.strftime("%Y%m%d_%H%M%S"))
     os.makedirs(session, exist_ok=True)
     step = 360.0 / shots                                # nominal step -> sets the strafe chord
     chord = 2.0 * radius * math.sin(math.radians(step) / 2.0)
-    n_target = max(2, int(round(degrees / step)))       # steps planned to cover `degrees`
-    max_shots = n_target + 3                            # tiny slip margin; NO runaway past target
+    max_shots = shots * 3                               # safety cap if per-step advance is tiny
     if cam.pipeline is None:
         log("Opening D405 (warming up)..."); cam.start(); log(cam.info())
 
-    log(f"robot orbit: target {degrees:.0f}°, ~{step:.0f}°/step ({n_target} steps planned, "
-        f"chord={chord*100:.1f}cm), R={radius*100:.0f}cm, cap {max_shots} shots")
+    log(f"robot orbit: target 360°, ~{step:.0f}°/step (chord={chord*100:.1f}cm), "
+        f"R={radius*100:.0f}cm, cap {max_shots} shots  (vision-measured advance)")
     bot.set_pan(90)                                     # camera fixed forward; the BASE aims
     face_object(bot, cam, log=log)                      # initial aim (not counted as advance)
     cumulative = 0.0
@@ -317,13 +313,13 @@ def run_orbit(bot, cam, shots=ORBIT_SHOTS, radius=ORBIT_RADIUS, degrees=360.0,
         ok = cam.save_to(folder)
         with open(os.path.join(folder, "angle.txt"), "w") as f:
             f.write(f"{cumulative:.3f}\n")              # MEASURED cumulative angle (better prior)
-        log(f"  shot {i+1} (~{cumulative:.0f}/{degrees:.0f}°, d={dist*100 if dist else float('nan'):.0f}cm)"
+        log(f"  shot {i+1} (~{cumulative:.0f}/360°, d={dist*100 if dist else float('nan'):.0f}cm)"
             + ("" if ok else "  FRAME DROPPED"))
         try:
             bot.beep(0.05)
         except Exception:
             pass
-        if cumulative >= degrees or i >= max_shots - 1:  # reached target (or the bounded cap)
+        if cumulative >= 360.0 or i >= max_shots - 1:   # go to a FULL 360 (or just past), not short
             break
         b0 = _bearing_deg(cam) or 0.0                   # ~0 (just centred)
         orbit_strafe(bot, chord, log=log)              # advance one tangential step
@@ -338,7 +334,7 @@ def run_orbit(bot, cam, shots=ORBIT_SHOTS, radius=ORBIT_RADIUS, degrees=360.0,
                                                         # honestly so we keep stepping until a true
                                                         # 360 (don't inflate slips -> no early stop).
         cumulative += adv
-        log(f"    advanced ~{adv:.1f}° (total {cumulative:.0f}/{degrees:.0f}°)")
+        log(f"    advanced ~{adv:.1f}° (total {cumulative:.0f}/360°)")
         i += 1
     bot.stop()
     log(f"  orbit complete: {i + 1} shots, {cumulative:.0f}° -> {session}")
@@ -373,7 +369,7 @@ def _pop(args, flag, cast):
     return None
 
 
-def capture(shots=ORBIT_SHOTS, radius=ORBIT_RADIUS, degrees=360.0, log=print):
+def capture(shots=ORBIT_SHOTS, radius=ORBIT_RADIUS, log=print):
     """Set up the robot + D405, run the orbit, tear down. Returns the session folder.
     Used by run.py and by main(). Pi only (imports RasBot)."""
     from setup_and_api.api import RasBot, Color
@@ -385,7 +381,7 @@ def capture(shots=ORBIT_SHOTS, radius=ORBIT_RADIUS, degrees=360.0, log=print):
         except Exception:
             pass
         try:
-            session = run_orbit(bot, cam, shots=shots, radius=radius, degrees=degrees, log=log)
+            session = run_orbit(bot, cam, shots=shots, radius=radius, log=log)
             bot.set_all_leds_color(Color.GREEN); bot.beep(0.15)
             return session
         except Exception as e:
@@ -406,8 +402,7 @@ def main():
 
     shots = _pop(args, "--shots", int) or ORBIT_SHOTS
     radius = _pop(args, "--radius", float) or ORBIT_RADIUS
-    degrees = _pop(args, "--degrees", float) or 360.0
-    capture(shots=shots, radius=radius, degrees=degrees)
+    capture(shots=shots, radius=radius)
 
 
 if __name__ == "__main__":
